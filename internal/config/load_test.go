@@ -1462,3 +1462,91 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		require.Equal(t, int64(100), large.MaxTokens)
 	})
 }
+
+func TestConfig_HooksRoundTrip(t *testing.T) {
+	// Hooks are nested under "options" in the JSON config.
+	data := []byte(`{
+		"options": {
+			"hooks": {
+				"PreToolUse": [
+					{"command": "audit.sh", "timeout_seconds": 10, "matcher": {"tool_name": "bash"}},
+					{"command": "log.sh", "async": true}
+				],
+				"PostToolUse": [
+					{"command": "notify.sh", "matcher": {"pattern": "mcp__.*"}}
+				],
+				"PostToolUseFailure": [
+					{"command": "alert.sh"}
+				],
+				"UserPromptSubmit": [
+					{"command": "filter.sh", "timeout_seconds": 5}
+				],
+				"Stop": [
+					{"command": "summarize.sh"}
+				]
+			}
+		}
+	}`)
+
+	cfg, err := loadFromBytes([][]byte{data})
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Options)
+	require.NotNil(t, cfg.Options.Hooks)
+
+	preHooks := cfg.Options.Hooks["PreToolUse"]
+	require.Len(t, preHooks, 2)
+	require.Equal(t, "audit.sh", preHooks[0].Command)
+	require.Equal(t, 10, preHooks[0].TimeoutSeconds)
+	require.Equal(t, "bash", preHooks[0].Matcher.ToolName)
+	require.False(t, preHooks[0].Async)
+	require.Equal(t, "log.sh", preHooks[1].Command)
+	require.True(t, preHooks[1].Async)
+
+	postHooks := cfg.Options.Hooks["PostToolUse"]
+	require.Len(t, postHooks, 1)
+	require.Equal(t, "notify.sh", postHooks[0].Command)
+	require.Equal(t, "mcp__.*", postHooks[0].Matcher.Pattern)
+
+	failureHooks := cfg.Options.Hooks["PostToolUseFailure"]
+	require.Len(t, failureHooks, 1)
+	require.Equal(t, "alert.sh", failureHooks[0].Command)
+
+	userHooks := cfg.Options.Hooks["UserPromptSubmit"]
+	require.Len(t, userHooks, 1)
+	require.Equal(t, 5, userHooks[0].TimeoutSeconds)
+
+	stopHooks := cfg.Options.Hooks["Stop"]
+	require.Len(t, stopHooks, 1)
+	require.Equal(t, "summarize.sh", stopHooks[0].Command)
+}
+
+func TestConfig_HooksMergeLayered(t *testing.T) {
+	// jsons.Merge concatenates arrays, so hooks from both layers accumulate.
+	// This means workspace/project configs can add hooks on top of user config.
+	base := []byte(`{"options": {"hooks": {"PreToolUse": [{"command": "base.sh"}]}}}`)
+	layer2 := []byte(`{"options": {"hooks": {"PreToolUse": [{"command": "extra.sh"}], "Stop": [{"command": "stop.sh"}]}}}`)
+
+	cfg, err := loadFromBytes([][]byte{base, layer2})
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Options)
+
+	// Both PreToolUse hooks are present (array union).
+	preHooks := cfg.Options.Hooks["PreToolUse"]
+	require.Len(t, preHooks, 2)
+	require.Equal(t, "base.sh", preHooks[0].Command)
+	require.Equal(t, "extra.sh", preHooks[1].Command)
+
+	// Stop hook only defined in layer2.
+	stopHooks := cfg.Options.Hooks["Stop"]
+	require.Len(t, stopHooks, 1)
+	require.Equal(t, "stop.sh", stopHooks[0].Command)
+}
+
+func TestConfig_HooksEmpty(t *testing.T) {
+	cfg, err := loadFromBytes([][]byte{[]byte(`{}`)})
+	require.NoError(t, err)
+	// Options may be nil when no options are in the config — just ensure no panic.
+	if cfg.Options != nil {
+		_ = cfg.Options.Hooks
+	}
+}

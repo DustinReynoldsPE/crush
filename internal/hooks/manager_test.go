@@ -3,6 +3,7 @@ package hooks
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -397,4 +398,88 @@ name=$(cat | jq -r '.hook_event_name')
 	result, err := m.Execute(context.Background(), Stop, HookEvent{SessionID: "s1"})
 	require.NoError(t, err)
 	require.Equal(t, "proceed", result.Decision)
+}
+
+// ── Async hooks ──────────────────────────────────────────────────────────────
+
+func TestManager_AsyncHook_DoesNotBlockChain(t *testing.T) {
+	t.Parallel()
+	// Async hook sleeps 2s — chain must complete well before that.
+	sentinel := t.TempDir() + "/sync-ran"
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {
+			{Command: "sleep 2", Async: true},
+			{Command: "touch " + sentinel},
+		},
+	})
+	start := time.Now()
+	result, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "bash"})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+	require.True(t, fileExists(sentinel), "sync hook after async must still run")
+	require.Less(t, elapsed, 1500*time.Millisecond, "chain must not block on async hook")
+}
+
+func TestManager_AsyncHook_DenyIsIgnored(t *testing.T) {
+	t.Parallel()
+	// Async hook that would deny must not affect the chain decision.
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: "exit 2", Async: true}},
+	})
+	result, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision, "async hook deny must be ignored")
+}
+
+// ── PermissionRequest / PermissionDenied routing ────────────────────────────
+
+func TestManager_PermissionRequest_Deny(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PermissionRequest: {{Command: `echo "blocked by policy" >&2; exit 2`}},
+	})
+	result, err := m.Execute(context.Background(), PermissionRequest, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.Equal(t, "deny", result.Decision)
+	require.Contains(t, result.Reason, "blocked by policy")
+}
+
+func TestManager_PermissionRequest_Approve(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PermissionRequest: {{Command: `echo '{"decision":"approve","reason":"auto-approved"}'`}},
+	})
+	result, err := m.Execute(context.Background(), PermissionRequest, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.Equal(t, "approve", result.Decision)
+}
+
+func TestManager_PermissionDenied_HookEventName(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "PermissionDenied" ] || { echo "wrong: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		PermissionDenied: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), PermissionDenied, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_PermissionRequest_ToolNameMatcher(t *testing.T) {
+	t.Parallel()
+	sentinel := t.TempDir() + "/ran"
+	m := NewManager(map[HookType][]HookConfig{
+		PermissionRequest: {{Command: "touch " + sentinel, Matcher: HookMatcher{ToolName: "bash"}}},
+	})
+
+	_, _ = m.Execute(context.Background(), PermissionRequest, HookEvent{SessionID: "s1", ToolName: "view"})
+	require.False(t, fileExists(sentinel), "must not fire for non-matching tool")
+
+	_, _ = m.Execute(context.Background(), PermissionRequest, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.True(t, fileExists(sentinel), "must fire for matching tool")
 }

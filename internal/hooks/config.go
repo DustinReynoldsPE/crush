@@ -19,6 +19,10 @@ type HookConfig struct {
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 	// Matcher is used to determine if this hook should run for a given event.
 	Matcher HookMatcher `json:"matcher,omitempty"`
+	// Async, when true, fires the hook in a background goroutine. The result
+	// is ignored and the chain continues immediately. Useful for logging or
+	// notification hooks where the outcome does not affect the agent.
+	Async bool `json:"async,omitempty"`
 }
 
 // HookSet groups configurations by HookType.

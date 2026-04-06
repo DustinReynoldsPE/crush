@@ -52,6 +52,16 @@ func (m *Manager) Execute(ctx context.Context, hookType HookType, event HookEven
 			return HookResult{Decision: "error", Reason: "Context cancelled during hook execution."}, ctx.Err()
 		}
 
+		// Async hooks fire and forget — never block or affect the chain.
+		if hookCfg.Async {
+			go func(cfg HookConfig, ev HookEvent) {
+				if _, execErr := m.executor.Execute(context.Background(), cfg, ev); execErr != nil {
+					slog.Warn("Async hook execution failed", "type", hookType, "error", execErr)
+				}
+			}(hookCfg, event)
+			continue
+		}
+
 		result, execErr := m.executor.Execute(ctx, hookCfg, event)
 		if execErr != nil {
 			slog.Error("Hook execution failed", "type", hookType, "error", execErr)
@@ -106,6 +116,6 @@ func (m *Manager) applyHookResult(current, new HookResult) HookResult {
 		}
 		return HookResult{Decision: "modify", Reason: new.Reason, ModifiedEvent: new.ModifiedEvent}
 	}
-	// Both proceed — keep latest reason.
-	return HookResult{Decision: "proceed", Reason: new.Reason}
+	// Pass through the latest result (covers "approve" and other extension decisions).
+	return HookResult{Decision: new.Decision, Reason: new.Reason, ModifiedEvent: new.ModifiedEvent}
 }

@@ -103,6 +103,7 @@ func NewCoordinator(
 	notify pubsub.Publisher[notify.Notification],
 ) (Coordinator, error) {
 	hooksManager := hooks.NewManager(buildHooksMap(cfg.Config().Options.Hooks))
+	permissions.SetHooksManager(hooksManager)
 
 	c := &coordinator{
 		cfg:          cfg,

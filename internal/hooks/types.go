@@ -14,6 +14,10 @@ const (
 	PostToolUseFailure HookType = "PostToolUseFailure"
 	// Stop is executed when the agent turn ends cleanly.
 	Stop HookType = "Stop"
+	// PermissionRequest is executed before a permission dialog is shown; can auto-approve or auto-deny.
+	PermissionRequest HookType = "PermissionRequest"
+	// PermissionDenied is executed after a permission is denied (non-blocking).
+	PermissionDenied HookType = "PermissionDenied"
 )
 
 // HookEvent represents the context of an event triggering a hook.

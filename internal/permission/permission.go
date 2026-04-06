@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/google/uuid"
 )
@@ -52,6 +53,7 @@ type Service interface {
 	SetSkipRequests(skip bool)
 	SkipRequests() bool
 	SubscribeNotifications(ctx context.Context) <-chan pubsub.Event[PermissionNotification]
+	SetHooksManager(m *hooks.Manager)
 }
 
 type permissionService struct {
@@ -66,6 +68,8 @@ type permissionService struct {
 	autoApproveSessionsMu sync.RWMutex
 	skip                  bool
 	allowedTools          []string
+	hooksManager          *hooks.Manager
+	hooksManagerMu        sync.RWMutex
 
 	// used to make sure we only process one request at a time
 	requestMu       sync.Mutex
@@ -111,6 +115,12 @@ func (s *permissionService) Grant(permission PermissionRequest) {
 	s.activeRequestMu.Unlock()
 }
 
+func (s *permissionService) SetHooksManager(m *hooks.Manager) {
+	s.hooksManagerMu.Lock()
+	s.hooksManager = m
+	s.hooksManagerMu.Unlock()
+}
+
 func (s *permissionService) Deny(permission PermissionRequest) {
 	s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
 		ToolCallID: permission.ToolCallID,
@@ -127,6 +137,27 @@ func (s *permissionService) Deny(permission PermissionRequest) {
 		s.activeRequest = nil
 	}
 	s.activeRequestMu.Unlock()
+
+	// PermissionDenied is non-blocking — fire and don't wait.
+	s.hooksManagerMu.RLock()
+	hm := s.hooksManager
+	s.hooksManagerMu.RUnlock()
+	if hm != nil {
+		go func() {
+			if _, err := hm.Execute(context.Background(), hooks.PermissionDenied, hooks.HookEvent{
+				SessionID: permission.SessionID,
+				ToolName:  permission.ToolName,
+				RawEventData: map[string]any{
+					"tool_call_id": permission.ToolCallID,
+					"action":       permission.Action,
+					"path":         permission.Path,
+				},
+			}); err != nil {
+				// Non-blocking; log only.
+				_ = err
+			}
+		}()
+	}
 }
 
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) (bool, error) {
@@ -138,6 +169,36 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 	commandKey := opts.ToolName + ":" + opts.Action
 	if slices.Contains(s.allowedTools, commandKey) || slices.Contains(s.allowedTools, opts.ToolName) {
 		return true, nil
+	}
+
+	// PermissionRequest hook — can auto-approve (proceed) or auto-deny before the
+	// UI is shown. A nil hooksManager or empty hook list falls through normally.
+	s.hooksManagerMu.RLock()
+	hm := s.hooksManager
+	s.hooksManagerMu.RUnlock()
+	if hm != nil {
+		hookResult, hookErr := hm.Execute(ctx, hooks.PermissionRequest, hooks.HookEvent{
+			SessionID: opts.SessionID,
+			ToolName:  opts.ToolName,
+			RawEventData: map[string]any{
+				"tool_call_id": opts.ToolCallID,
+				"action":       opts.Action,
+				"description":  opts.Description,
+				"path":         opts.Path,
+			},
+		})
+		if hookErr == nil {
+			switch hookResult.Decision {
+			case "deny":
+				return false, nil
+			case "approve":
+				s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+					ToolCallID: opts.ToolCallID,
+					Granted:    true,
+				})
+				return true, nil
+			}
+		}
 	}
 
 	// tell the UI that a permission was requested
