@@ -1,9 +1,12 @@
 package permission
 
 import (
+	"os"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -250,4 +253,104 @@ func TestPermissionService_SequentialProperties(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, result, "Repeated request should be auto-approved due to persistent permission")
 	})
+}
+
+// ── Hook integration ─────────────────────────────────────────────────────────
+
+func TestPermissionService_HookRequest_AutoDeny(t *testing.T) {
+	service := NewPermissionService("/tmp", false, []string{})
+	m := hooks.NewManager(map[hooks.HookType][]hooks.HookConfig{
+		hooks.PermissionRequest: {{Command: `echo "blocked" >&2; exit 2`}},
+	})
+	service.SetHooksManager(m)
+
+	result, err := service.Request(t.Context(), CreatePermissionRequest{
+		SessionID: "s1", ToolName: "bash", Action: "execute", Path: "/tmp",
+	})
+	require.NoError(t, err)
+	require.False(t, result, "PermissionRequest hook deny must auto-deny without showing UI")
+}
+
+func TestPermissionService_HookRequest_AutoApprove(t *testing.T) {
+	service := NewPermissionService("/tmp", false, []string{})
+	m := hooks.NewManager(map[hooks.HookType][]hooks.HookConfig{
+		hooks.PermissionRequest: {{Command: `echo '{"decision":"approve"}'`}},
+	})
+	service.SetHooksManager(m)
+
+	result, err := service.Request(t.Context(), CreatePermissionRequest{
+		SessionID: "s1", ToolName: "bash", Action: "execute", Path: "/tmp",
+	})
+	require.NoError(t, err)
+	require.True(t, result, "PermissionRequest hook approve must auto-grant without showing UI")
+}
+
+func TestPermissionService_HookRequest_ProceedShowsUI(t *testing.T) {
+	// When hook returns proceed, the normal UI flow runs (waits on respCh).
+	service := NewPermissionService("/tmp", false, []string{})
+	m := hooks.NewManager(map[hooks.HookType][]hooks.HookConfig{
+		hooks.PermissionRequest: {{Command: "true"}},
+	})
+	service.SetHooksManager(m)
+
+	events := service.Subscribe(t.Context())
+	var result bool
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		result, _ = service.Request(t.Context(), CreatePermissionRequest{
+			SessionID: "s1", ToolName: "bash", Action: "execute", Path: "/tmp",
+		})
+	}()
+
+	event := <-events
+	service.Grant(event.Payload)
+	<-done
+	require.True(t, result, "hook proceed must fall through to UI grant")
+}
+
+func TestPermissionService_HookDenied_FiresAfterDeny(t *testing.T) {
+	sentinel := t.TempDir() + "/denied-ran"
+	service := NewPermissionService("/tmp", false, []string{})
+	m := hooks.NewManager(map[hooks.HookType][]hooks.HookConfig{
+		hooks.PermissionDenied: {{Command: "touch " + sentinel}},
+	})
+	service.SetHooksManager(m)
+
+	// Simulate a pending request so Deny can resolve the channel.
+	ps := service.(*permissionService)
+	perm := PermissionRequest{
+		ID: "fake-id", SessionID: "s1", ToolName: "bash", ToolCallID: "tc1",
+	}
+	respCh := make(chan bool, 1)
+	ps.pendingRequests.Set(perm.ID, respCh)
+
+	service.Deny(perm)
+	<-respCh // drain the response
+
+	// Give the background goroutine time to run.
+	deadline := t.Context().Done()
+	for i := 0; i < 50; i++ {
+		if _, err := os.Stat(sentinel); err == nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("context cancelled before sentinel appeared")
+		default:
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	_, err := os.Stat(sentinel)
+	require.NoError(t, err, "PermissionDenied hook must fire after Deny()")
+}
+
+func TestPermissionService_NoHooksManager_NoChange(t *testing.T) {
+	// Without a hooks manager the service behaves exactly as before.
+	service := NewPermissionService("/tmp", true, []string{})
+	result, err := service.Request(t.Context(), CreatePermissionRequest{
+		SessionID: "s1", ToolName: "bash", Action: "execute", Path: "/tmp",
+	})
+	require.NoError(t, err)
+	require.True(t, result, "skip mode must still auto-approve when no hooks manager is set")
 }
