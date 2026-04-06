@@ -283,3 +283,118 @@ func TestMatchesEvent_InvalidPattern_NoMatch(t *testing.T) {
 	cfg := HookConfig{Matcher: HookMatcher{Pattern: `[invalid`}}
 	require.False(t, m.matchesEvent(cfg, HookEvent{ToolName: "bash"}))
 }
+
+// ── PostToolUseFailure routing ───────────────────────────────────────────────
+
+func TestManager_PostToolUseFailure_RoutedSeparatelyFromPostToolUse(t *testing.T) {
+	t.Parallel()
+	successSentinel := t.TempDir() + "/success-ran"
+	failureSentinel := t.TempDir() + "/failure-ran"
+	m := NewManager(map[HookType][]HookConfig{
+		PostToolUse:        {{Command: "touch " + successSentinel}},
+		PostToolUseFailure: {{Command: "touch " + failureSentinel}},
+	})
+
+	_, err := m.Execute(context.Background(), PostToolUse, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.True(t, fileExists(successSentinel), "PostToolUse hook must fire for PostToolUse events")
+	require.False(t, fileExists(failureSentinel), "PostToolUseFailure hook must not fire for PostToolUse events")
+
+	_, err = m.Execute(context.Background(), PostToolUseFailure, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.True(t, fileExists(failureSentinel), "PostToolUseFailure hook must fire for PostToolUseFailure events")
+}
+
+func TestManager_PostToolUseFailure_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "PostToolUseFailure" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		PostToolUseFailure: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), PostToolUseFailure, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_PostToolUseFailure_Deny(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PostToolUseFailure: {{Command: `echo "audit failure" >&2; exit 2`}},
+	})
+	result, err := m.Execute(context.Background(), PostToolUseFailure, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.Equal(t, "deny", result.Decision)
+	require.Contains(t, result.Reason, "audit failure")
+}
+
+func TestManager_PostToolUseFailure_MatcherFiltersCorrectly(t *testing.T) {
+	t.Parallel()
+	sentinel := t.TempDir() + "/ran"
+	m := NewManager(map[HookType][]HookConfig{
+		PostToolUseFailure: {{
+			Command: "touch " + sentinel,
+			Matcher: HookMatcher{ToolName: "bash"},
+		}},
+	})
+
+	_, err := m.Execute(context.Background(), PostToolUseFailure, HookEvent{SessionID: "s1", ToolName: "write"})
+	require.NoError(t, err)
+	require.False(t, fileExists(sentinel), "matcher must filter by tool name")
+
+	_, err = m.Execute(context.Background(), PostToolUseFailure, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.True(t, fileExists(sentinel), "matcher must allow matching tool name")
+}
+
+// ── Stop hook deny carries continuation reason ───────────────────────────────
+
+func TestManager_Stop_Deny_CarriesReason(t *testing.T) {
+	t.Parallel()
+	// The agent uses hookResult.Reason as the continuation prompt when decision
+	// is "deny". Verify the manager faithfully returns the hook-provided reason.
+	m := NewManager(map[HookType][]HookConfig{
+		Stop: {{Command: `echo '{"decision":"deny","reason":"please summarize todos"}'`}},
+	})
+	result, err := m.Execute(context.Background(), Stop, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "deny", result.Decision)
+	require.Equal(t, "please summarize todos", result.Reason)
+}
+
+func TestManager_Stop_Proceed_NoBlockingEffect(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		Stop: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), Stop, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_Stop_DenyViaExitTwo_CarriesStderrReason(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		Stop: {{Command: `echo "run post-processing" >&2; exit 2`}},
+	})
+	result, err := m.Execute(context.Background(), Stop, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "deny", result.Decision)
+	require.Contains(t, result.Reason, "run post-processing")
+}
+
+func TestManager_Stop_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "Stop" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		Stop: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), Stop, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
