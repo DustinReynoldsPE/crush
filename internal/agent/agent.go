@@ -432,18 +432,23 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			if createMsgErr != nil {
 				return createMsgErr
 			}
-			// PostToolUse is non-blocking per spec: the tool already ran, so we
-			// log hook errors/denials rather than aborting the stream.
+			// PostToolUse / PostToolUseFailure are non-blocking per spec: the
+			// tool already ran, so we log hook errors/denials rather than
+			// aborting the stream.
 			if a.hooksManager != nil {
-				hookResult, hookErr := a.hooksManager.Execute(ctx, hooks.PostToolUse, hooks.HookEvent{
+				hookType := hooks.PostToolUse
+				if result.Result.GetType() == fantasy.ToolResultContentTypeError {
+					hookType = hooks.PostToolUseFailure
+				}
+				hookResult, hookErr := a.hooksManager.Execute(ctx, hookType, hooks.HookEvent{
 					SessionID: call.SessionID,
 					ToolName:  result.ToolName,
 				})
 				switch {
 				case hookErr != nil:
-					slog.Warn("PostToolUse hook error (non-blocking)", "error", hookErr, "tool", result.ToolName)
+					slog.Warn("hook error (non-blocking)", "error", hookErr, "tool", result.ToolName, "hook", hookType)
 				case hookResult.Decision == "deny":
-					slog.Info("PostToolUse hook denied (tool already ran; non-blocking)", "reason", hookResult.Reason, "tool", result.ToolName)
+					slog.Info("hook denied (tool already ran; non-blocking)", "reason", hookResult.Reason, "tool", result.ToolName, "hook", hookType)
 				}
 			}
 			return nil
@@ -601,11 +606,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		return nil, err
 	}
 
-	// Fire Stop hook when the agent turn ends cleanly.
+	// Fire Stop hook when the agent turn ends cleanly. If the hook denies
+	// the stop, inject its reason as a continuation prompt so the agent
+	// keeps running.
 	if a.hooksManager != nil {
-		_, _ = a.hooksManager.Execute(genCtx, hooks.Stop, hooks.HookEvent{
+		stopResult, stopErr := a.hooksManager.Execute(genCtx, hooks.Stop, hooks.HookEvent{
 			SessionID: call.SessionID,
 		})
+		if stopErr == nil && stopResult.Decision == "deny" && stopResult.Reason != "" {
+			continuationCall := call
+			continuationCall.Prompt = stopResult.Reason
+			existing, _ := a.messageQueue.Get(call.SessionID)
+			a.messageQueue.Set(call.SessionID, append([]SessionAgentCall{continuationCall}, existing...))
+		}
 	}
 
 	// Send notification that agent has finished its turn (skip for

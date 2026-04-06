@@ -8,8 +8,10 @@ const (
 	UserPromptSubmit HookType = "UserPromptSubmit"
 	// PreToolUse is executed before a tool is called.
 	PreToolUse HookType = "PreToolUse"
-	// PostToolUse is executed after a tool has returned a result.
+	// PostToolUse is executed after a tool has returned a successful result.
 	PostToolUse HookType = "PostToolUse"
+	// PostToolUseFailure is executed after a tool has returned an error result.
+	PostToolUseFailure HookType = "PostToolUseFailure"
 	// Stop is executed when the agent turn ends cleanly.
 	Stop HookType = "Stop"
 )
