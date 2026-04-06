@@ -287,19 +287,6 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			// Use latest tools (updated by SetTools when MCP tools change).
 			prepared.Tools = a.tools.Copy()
 
-			// Execute pre-step hooks.
-			if a.hooksManager != nil {
-				hookResult, hookErr := a.hooksManager.Execute(callContext, hooks.PreToolUse, hooks.HookEvent{
-					SessionID: call.SessionID,
-				})
-				if hookErr != nil {
-					return callContext, prepared, hookErr
-				}
-				if hookResult.Decision == "deny" {
-					return callContext, prepared, fmt.Errorf("hook denied tool use: %s", hookResult.Reason)
-				}
-			}
-
 			queuedCalls, _ := a.messageQueue.Get(call.SessionID)
 			a.messageQueue.Del(call.SessionID)
 			for _, queued := range queuedCalls {
@@ -403,6 +390,23 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			// TODO: implement
 		},
 		OnToolCall: func(tc fantasy.ToolCallContent) error {
+			// Fire PreToolUse hook now that the tool name and input are known.
+			if a.hooksManager != nil {
+				hookResult, hookErr := a.hooksManager.Execute(genCtx, hooks.PreToolUse, hooks.HookEvent{
+					SessionID: call.SessionID,
+					ToolName:  tc.ToolName,
+					ToolInput: tc.Input,
+				})
+				if hookErr != nil {
+					return hookErr
+				}
+				if hookResult.Decision == "deny" {
+					// Surfaces as a "denied by hook" tool result so the model can
+					// recover rather than receiving an unrecoverable stream error.
+					return fmt.Errorf("%w: %s", permission.ErrorPermissionDenied, hookResult.Reason)
+				}
+			}
+
 			toolCall := message.ToolCall{
 				ID:               tc.ToolCallID,
 				Name:             tc.ToolName,
@@ -428,13 +432,18 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			if createMsgErr != nil {
 				return createMsgErr
 			}
+			// PostToolUse is non-blocking per spec: the tool already ran, so we
+			// log hook errors/denials rather than aborting the stream.
 			if a.hooksManager != nil {
-				_, hookErr := a.hooksManager.Execute(ctx, hooks.PostToolUse, hooks.HookEvent{
+				hookResult, hookErr := a.hooksManager.Execute(ctx, hooks.PostToolUse, hooks.HookEvent{
 					SessionID: call.SessionID,
 					ToolName:  result.ToolName,
 				})
-				if hookErr != nil {
-					return hookErr
+				switch {
+				case hookErr != nil:
+					slog.Warn("PostToolUse hook error (non-blocking)", "error", hookErr, "tool", result.ToolName)
+				case hookResult.Decision == "deny":
+					slog.Info("PostToolUse hook denied (tool already ran; non-blocking)", "reason", hookResult.Reason, "tool", result.ToolName)
 				}
 			}
 			return nil
