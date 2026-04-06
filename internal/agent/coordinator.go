@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/filetracker"
 	"github.com/charmbracelet/crush/internal/history"
 	"github.com/charmbracelet/crush/internal/log"
@@ -81,7 +82,8 @@ type coordinator struct {
 	history     history.Service
 	filetracker filetracker.Service
 	lspManager  *lsp.Manager
-	notify      pubsub.Publisher[notify.Notification]
+	notify        pubsub.Publisher[notify.Notification]
+	hooksManager  *hooks.Manager
 
 	currentAgent SessionAgent
 	agents       map[string]SessionAgent
@@ -100,16 +102,19 @@ func NewCoordinator(
 	lspManager *lsp.Manager,
 	notify pubsub.Publisher[notify.Notification],
 ) (Coordinator, error) {
+	hooksManager := hooks.NewManager(buildHooksMap(cfg.Config().Options.Hooks))
+
 	c := &coordinator{
-		cfg:         cfg,
-		sessions:    sessions,
-		messages:    messages,
-		permissions: permissions,
-		history:     history,
-		filetracker: filetracker,
-		lspManager:  lspManager,
-		notify:      notify,
-		agents:      make(map[string]SessionAgent),
+		cfg:          cfg,
+		sessions:     sessions,
+		messages:     messages,
+		permissions:  permissions,
+		history:      history,
+		filetracker:  filetracker,
+		lspManager:   lspManager,
+		notify:       notify,
+		hooksManager: hooksManager,
+		agents:       make(map[string]SessionAgent),
 	}
 
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]
@@ -396,6 +401,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		Messages:             c.messages,
 		Tools:                nil,
 		Notify:               c.notify,
+		HooksManager:         c.hooksManager,
 	})
 
 	c.readyWg.Go(func() error {
@@ -1036,4 +1042,13 @@ func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionI
 	}
 
 	return nil
+}
+
+// buildHooksMap converts the config hooks map (keyed by HookType) into the
+// format expected by hooks.NewManager.
+func buildHooksMap(cfgHooks map[hooks.HookType][]hooks.HookConfig) map[hooks.HookType][]hooks.HookConfig {
+	if cfgHooks == nil {
+		return map[hooks.HookType][]hooks.HookConfig{}
+	}
+	return cfgHooks
 }

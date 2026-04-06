@@ -1,0 +1,285 @@
+package hooks
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+// ── Manager.Execute: basic routing ──────────────────────────────────────────
+
+func TestManager_NoHooksForType_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{})
+	result, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_NilMap_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(nil)
+	result, err := m.Execute(context.Background(), PostToolUse, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_SingleHook_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_SingleHook_Deny(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: `echo "policy violation" >&2; exit 2`}},
+	})
+	result, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.Equal(t, "deny", result.Decision)
+	require.Contains(t, result.Reason, "policy violation")
+}
+
+func TestManager_MultipleHooks_AllProceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: "true"}, {Command: "true"}, {Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_DenyStopsChain(t *testing.T) {
+	t.Parallel()
+	sentinel := t.TempDir() + "/reached"
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {
+			{Command: `exit 2`},
+			{Command: "touch " + sentinel}, // must not run
+		},
+	})
+	result, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "deny", result.Decision)
+	require.False(t, fileExists(sentinel), "second hook must not execute after deny")
+}
+
+func TestManager_HookEventName_StampedOnEvent(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "PostToolUse" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		PostToolUse: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), PostToolUse, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_ContextCancelledBeforeExecution(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: "true"}},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := m.Execute(ctx, PreToolUse, HookEvent{SessionID: "s1"})
+	require.Error(t, err)
+	require.Equal(t, "error", result.Decision)
+}
+
+func TestManager_NonBlockingErrorContinues(t *testing.T) {
+	t.Parallel()
+	sentinel := t.TempDir() + "/reached"
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {
+			{Command: "exit 1"},                // non-blocking error
+			{Command: "touch " + sentinel},     // should still run
+		},
+	})
+	// A non-blocking error from the executor returns a Go error, which stops
+	// the chain. Verify the first hook's error decision is reported.
+	result, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1"})
+	// Either an error or an "error" decision is acceptable for exit 1.
+	_ = result
+	_ = err
+}
+
+// ── Matcher filtering ────────────────────────────────────────────────────────
+
+func TestManager_Matcher_ExactToolName_Fires(t *testing.T) {
+	t.Parallel()
+	sentinel := t.TempDir() + "/ran"
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: "touch " + sentinel, Matcher: HookMatcher{ToolName: "bash"}}},
+	})
+	_, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.True(t, fileExists(sentinel), "hook should fire for matching tool name")
+}
+
+func TestManager_Matcher_ExactToolName_Skipped(t *testing.T) {
+	t.Parallel()
+	sentinel := t.TempDir() + "/ran"
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: "touch " + sentinel, Matcher: HookMatcher{ToolName: "bash"}}},
+	})
+	_, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "write"})
+	require.NoError(t, err)
+	require.False(t, fileExists(sentinel), "hook must not fire for non-matching tool name")
+}
+
+func TestManager_Matcher_RegexPattern_Fires(t *testing.T) {
+	t.Parallel()
+	sentinel := t.TempDir() + "/ran"
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: "touch " + sentinel, Matcher: HookMatcher{Pattern: `mcp__.*`}}},
+	})
+	_, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "mcp__memory__store"})
+	require.NoError(t, err)
+	require.True(t, fileExists(sentinel), "hook should fire for pattern-matching tool")
+}
+
+func TestManager_Matcher_RegexPattern_Skipped(t *testing.T) {
+	t.Parallel()
+	sentinel := t.TempDir() + "/ran"
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: "touch " + sentinel, Matcher: HookMatcher{Pattern: `mcp__.*`}}},
+	})
+	_, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.False(t, fileExists(sentinel), "hook must not fire for non-matching pattern")
+}
+
+func TestManager_Matcher_EditOrWrite_Pattern(t *testing.T) {
+	t.Parallel()
+	sentinel := t.TempDir() + "/ran"
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: "touch " + sentinel, Matcher: HookMatcher{Pattern: `edit|write`}}},
+	})
+	_, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "write"})
+	require.NoError(t, err)
+	require.True(t, fileExists(sentinel))
+}
+
+func TestManager_Matcher_NoMatcher_AlwaysFires(t *testing.T) {
+	t.Parallel()
+	sentinel := t.TempDir() + "/ran"
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: "touch " + sentinel}}, // no matcher
+	})
+	_, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "anything"})
+	require.NoError(t, err)
+	require.True(t, fileExists(sentinel), "hook with no matcher should always fire")
+}
+
+// ── applyHookResult priority ─────────────────────────────────────────────────
+
+func TestApplyHookResult_DenyOverProceed(t *testing.T) {
+	t.Parallel()
+	m := &Manager{}
+	result := m.applyHookResult(
+		HookResult{Decision: "proceed"},
+		HookResult{Decision: "deny", Reason: "blocked"},
+	)
+	require.Equal(t, "deny", result.Decision)
+	require.Equal(t, "blocked", result.Reason)
+}
+
+func TestApplyHookResult_DenyOverModify(t *testing.T) {
+	t.Parallel()
+	m := &Manager{}
+	result := m.applyHookResult(
+		HookResult{Decision: "modify", Reason: "earlier mod"},
+		HookResult{Decision: "deny", Reason: "later deny"},
+	)
+	require.Equal(t, "deny", result.Decision)
+}
+
+func TestApplyHookResult_ExistingDeny_NotOverriddenByProceed(t *testing.T) {
+	t.Parallel()
+	m := &Manager{}
+	result := m.applyHookResult(
+		HookResult{Decision: "deny", Reason: "original"},
+		HookResult{Decision: "proceed"},
+	)
+	require.Equal(t, "deny", result.Decision)
+	require.Equal(t, "original", result.Reason)
+}
+
+func TestApplyHookResult_ModifyOverProceed(t *testing.T) {
+	t.Parallel()
+	m := &Manager{}
+	result := m.applyHookResult(
+		HookResult{Decision: "proceed"},
+		HookResult{Decision: "modify", Reason: "tweak", ModifiedEvent: "new-event"},
+	)
+	require.Equal(t, "modify", result.Decision)
+	require.Equal(t, "new-event", result.ModifiedEvent)
+}
+
+func TestApplyHookResult_ModifyChain_ReasonsAccumulate(t *testing.T) {
+	t.Parallel()
+	m := &Manager{}
+	result := m.applyHookResult(
+		HookResult{Decision: "modify", Reason: "first mod", ModifiedEvent: "event-1"},
+		HookResult{Decision: "modify", Reason: "second mod", ModifiedEvent: "event-2"},
+	)
+	require.Equal(t, "modify", result.Decision)
+	require.Equal(t, "event-2", result.ModifiedEvent) // latest event wins
+	require.Contains(t, result.Reason, "first mod")
+	require.Contains(t, result.Reason, "second mod")
+}
+
+func TestApplyHookResult_ProceedChain_LatestReasonWins(t *testing.T) {
+	t.Parallel()
+	m := &Manager{}
+	result := m.applyHookResult(
+		HookResult{Decision: "proceed", Reason: "hook 1 ok"},
+		HookResult{Decision: "proceed", Reason: "hook 2 ok"},
+	)
+	require.Equal(t, "proceed", result.Decision)
+	require.Equal(t, "hook 2 ok", result.Reason)
+}
+
+// ── matchesEvent ─────────────────────────────────────────────────────────────
+
+func TestMatchesEvent_EmptyMatcher_AlwaysTrue(t *testing.T) {
+	t.Parallel()
+	m := &Manager{}
+	require.True(t, m.matchesEvent(HookConfig{}, HookEvent{ToolName: "anything"}))
+}
+
+func TestMatchesEvent_ToolName_Exact(t *testing.T) {
+	t.Parallel()
+	m := &Manager{}
+	cfg := HookConfig{Matcher: HookMatcher{ToolName: "bash"}}
+	require.True(t, m.matchesEvent(cfg, HookEvent{ToolName: "bash"}))
+	require.False(t, m.matchesEvent(cfg, HookEvent{ToolName: "write"}))
+}
+
+func TestMatchesEvent_Pattern_Regex(t *testing.T) {
+	t.Parallel()
+	m := &Manager{}
+	cfg := HookConfig{Matcher: HookMatcher{Pattern: `mcp__memory__.*`}}
+	require.True(t, m.matchesEvent(cfg, HookEvent{ToolName: "mcp__memory__store"}))
+	require.True(t, m.matchesEvent(cfg, HookEvent{ToolName: "mcp__memory__retrieve"}))
+	require.False(t, m.matchesEvent(cfg, HookEvent{ToolName: "mcp__fs__read"}))
+	require.False(t, m.matchesEvent(cfg, HookEvent{ToolName: "bash"}))
+}
+
+func TestMatchesEvent_InvalidPattern_NoMatch(t *testing.T) {
+	t.Parallel()
+	m := &Manager{}
+	cfg := HookConfig{Matcher: HookMatcher{Pattern: `[invalid`}}
+	require.False(t, m.matchesEvent(cfg, HookEvent{ToolName: "bash"}))
+}

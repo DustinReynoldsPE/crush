@@ -41,6 +41,7 @@ import (
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/stringext"
 	"github.com/charmbracelet/crush/internal/version"
 	"github.com/charmbracelet/x/exp/charmtone"
@@ -115,6 +116,7 @@ type sessionAgent struct {
 	disableAutoSummarize bool
 	isYolo               bool
 	notify               pubsub.Publisher[notify.Notification]
+	hooksManager         *hooks.Manager
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, context.CancelFunc]
@@ -132,6 +134,7 @@ type SessionAgentOptions struct {
 	Messages             message.Service
 	Tools                []fantasy.AgentTool
 	Notify               pubsub.Publisher[notify.Notification]
+	HooksManager         *hooks.Manager
 }
 
 func NewSessionAgent(
@@ -149,6 +152,7 @@ func NewSessionAgent(
 		tools:                csync.NewSliceFrom(opts.Tools),
 		isYolo:               opts.IsYolo,
 		notify:               opts.Notify,
+		hooksManager:         opts.HooksManager,
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
 		activeRequests:       csync.NewMap[string, context.CancelFunc](),
 	}
@@ -233,6 +237,20 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		return nil, err
 	}
 
+	// Fire UserPromptSubmit hook.
+	if a.hooksManager != nil {
+		hookResult, hookErr := a.hooksManager.Execute(ctx, hooks.UserPromptSubmit, hooks.HookEvent{
+			SessionID:    call.SessionID,
+			RawEventData: call.Prompt,
+		})
+		if hookErr != nil {
+			return nil, hookErr
+		}
+		if hookResult.Decision == "deny" {
+			return nil, fmt.Errorf("hook denied prompt: %s", hookResult.Reason)
+		}
+	}
+
 	// Add the session to the context.
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, call.SessionID)
 
@@ -268,6 +286,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 
 			// Use latest tools (updated by SetTools when MCP tools change).
 			prepared.Tools = a.tools.Copy()
+
+			// Execute pre-step hooks.
+			if a.hooksManager != nil {
+				hookResult, hookErr := a.hooksManager.Execute(callContext, hooks.PreToolUse, hooks.HookEvent{
+					SessionID: call.SessionID,
+				})
+				if hookErr != nil {
+					return callContext, prepared, hookErr
+				}
+				if hookResult.Decision == "deny" {
+					return callContext, prepared, fmt.Errorf("hook denied tool use: %s", hookResult.Reason)
+				}
+			}
 
 			queuedCalls, _ := a.messageQueue.Get(call.SessionID)
 			a.messageQueue.Del(call.SessionID)
@@ -394,7 +425,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 					toolResult,
 				},
 			})
-			return createMsgErr
+			if createMsgErr != nil {
+				return createMsgErr
+			}
+			if a.hooksManager != nil {
+				_, hookErr := a.hooksManager.Execute(ctx, hooks.PostToolUse, hooks.HookEvent{
+					SessionID: call.SessionID,
+					ToolName:  result.ToolName,
+				})
+				if hookErr != nil {
+					return hookErr
+				}
+			}
+			return nil
 		},
 		OnStepFinish: func(stepResult fantasy.StepResult) error {
 			finishReason := message.FinishReasonUnknown
@@ -547,6 +590,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			return nil, updateErr
 		}
 		return nil, err
+	}
+
+	// Fire Stop hook when the agent turn ends cleanly.
+	if a.hooksManager != nil {
+		_, _ = a.hooksManager.Execute(genCtx, hooks.Stop, hooks.HookEvent{
+			SessionID: call.SessionID,
+		})
 	}
 
 	// Send notification that agent has finished its turn (skip for

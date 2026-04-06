@@ -18,6 +18,8 @@ import (
 	"github.com/charmbracelet/crush/internal/env"
 	"github.com/charmbracelet/crush/internal/oauth"
 	"github.com/charmbracelet/crush/internal/oauth/copilot"
+	"github.com/charmbracelet/crush/internal/hooks"
+
 	"github.com/invopop/jsonschema"
 )
 
@@ -257,6 +259,7 @@ type Options struct {
 	Progress                  *bool        `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
 	DisableNotifications      bool         `json:"disable_notifications,omitempty" jsonschema:"description=Disable desktop notifications,default=false"`
 	DisabledSkills            []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crush-config"`
+	Hooks map[hooks.HookType][]hooks.HookConfig `json:"hooks,omitempty" jsonschema:"description=Hook scripts to run at lifecycle events (UserPromptSubmit, PreToolUse, PostToolUse, Stop)"`
 }
 
 type MCPs map[string]MCPConfig
