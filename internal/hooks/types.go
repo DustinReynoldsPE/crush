@@ -80,6 +80,11 @@ const (
 	// the todos tool. Always fired asynchronously.
 	// RawEventData includes "task_id" (content hash) and "title" (content string).
 	TaskCompleted HookType = "TaskCompleted"
+	// InstructionsLoaded is executed when a context/instructions file (e.g.
+	// CLAUDE.md, AGENTS.md, .cursor/rules/*.md) is loaded into the prompt.
+	// Always fired asynchronously. RawEventData includes "path" (absolute file
+	// path) and "reason" ("session_start").
+	InstructionsLoaded HookType = "InstructionsLoaded"
 )
 
 // HookEvent represents the context of an event triggering a hook.

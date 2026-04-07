@@ -1256,3 +1256,38 @@ title=$(echo "$payload" | jq -r '.data.title')
 	require.NoError(t, err)
 	require.Equal(t, "proceed", result.Decision)
 }
+
+func TestManager_InstructionsLoaded_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		InstructionsLoaded: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), InstructionsLoaded, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_InstructionsLoaded_PayloadHasPathAndReason(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+name=$(echo "$payload" | jq -r '.hook_event_name')
+[ "$name" = "InstructionsLoaded" ] || { echo "wrong event: $name" >&2; exit 2; }
+path=$(echo "$payload" | jq -r '.data.path')
+[ "$path" = "/workspace/AGENTS.md" ] || { echo "wrong path: $path" >&2; exit 2; }
+reason=$(echo "$payload" | jq -r '.data.reason')
+[ "$reason" = "session_start" ] || { echo "wrong reason: $reason" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		InstructionsLoaded: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), InstructionsLoaded, HookEvent{
+		SessionID: "s1",
+		RawEventData: map[string]string{
+			"path":   "/workspace/AGENTS.md",
+			"reason": "session_start",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}

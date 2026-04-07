@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/home"
 	"github.com/charmbracelet/crush/internal/shell"
 	"github.com/charmbracelet/crush/internal/skills"
@@ -20,11 +21,13 @@ import (
 
 // Prompt represents a template-based prompt generator.
 type Prompt struct {
-	name       string
-	template   string
-	now        func() time.Time
-	platform   string
-	workingDir string
+	name         string
+	template     string
+	now          func() time.Time
+	platform     string
+	workingDir   string
+	hooksManager *hooks.Manager
+	sessionID    string
 }
 
 type PromptDat struct {
@@ -56,6 +59,13 @@ func WithTimeFunc(fn func() time.Time) Option {
 func WithPlatform(platform string) Option {
 	return func(p *Prompt) {
 		p.platform = platform
+	}
+}
+
+func WithHooksManager(m *hooks.Manager, sessionID string) Option {
+	return func(p *Prompt) {
+		p.hooksManager = m
+		p.sessionID = sessionID
 	}
 }
 
@@ -162,8 +172,21 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		if _, ok := files[pathKey]; ok {
 			continue
 		}
-		content := processContextPath(expanded, store)
-		files[pathKey] = content
+		loaded := processContextPath(expanded, store)
+		files[pathKey] = loaded
+		if p.hooksManager != nil {
+			for _, cf := range loaded {
+				path := cf.Path
+				sid := p.sessionID
+				go func() {
+					_, _ = p.hooksManager.Execute(context.Background(), hooks.InstructionsLoaded, hooks.HookEvent{
+						HookEventName: hooks.InstructionsLoaded,
+						SessionID:     sid,
+						RawEventData:  map[string]string{"path": path, "reason": "session_start"},
+					})
+				}()
+			}
+		}
 	}
 
 	// Discover and load skills metadata.
