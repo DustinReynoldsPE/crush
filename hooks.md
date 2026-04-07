@@ -23,6 +23,12 @@ Crush supports lifecycle hooks that let you inject custom logic at specific poin
 | `PostCompact` | No (async) | After context compaction completes successfully. Not fired if compaction fails. |
 | `SubagentStart` | No (async) | When a sub-agent session is spawned (multi-agent tool use). |
 | `SubagentStop` | No (async) | When a sub-agent session finishes, on both success and error. |
+| `StopFailure` | No (async) | When the agent turn ends due to a genuine error (API failure, rate limit, provider error). Not fired for context cancellations or permission denials. |
+| `SessionEnd` | No (async) | When a session turn completes and no further queued prompts remain. Fires on both success and error paths (except cancellations). |
+| `CwdChanged` | No (async) | When the working directory changes after a `bash` command (e.g. via `cd`). |
+| `TaskCreated` | No (async) | When a new task is added to the todo list. |
+| `TaskCompleted` | No (async) | When a task transitions to completed status. |
+| `InstructionsLoaded` | No (async) | When a context/instructions file (CLAUDE.md, AGENTS.md, .cursor/rules/*.md, etc.) is loaded into the system prompt. |
 
 **Blocking vs. async:** Blocking hooks run synchronously in the agent's call chain — their decision (`proceed`, `deny`, `modify`) affects control flow. Async hooks are fire-and-forget; their result is logged but never affects the agent.
 
@@ -49,7 +55,6 @@ Fields present depend on the event type:
 | `tool_name` | `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `PermissionDenied` |
 | `tool_input` | `PreToolUse` |
 | `data.message` | `Notification` (`"agent_finished"`) |
-| `data.error` | `AgentError` (error string) |
 | `data.tokens_used` | `ContextWindowFull` (integer) |
 | `data.threshold` | `ContextWindowFull` (integer) |
 | `data.step_index` | `PreStep`, `PostStep` (0-based integer) |
@@ -58,6 +63,13 @@ Fields present depend on the event type:
 | `data.output_tokens` | `PostStep` (integer) |
 | `data.trigger` | `PreCompact`, `PostCompact` (`"auto"` or `"manual"`) |
 | `data.agent_session_id` | `SubagentStart`, `SubagentStop` (sub-session ID string) |
+| `data.error` | `StopFailure` (error string), `AgentError` (error string) |
+| `data.finish_reason` | `StopFailure` (string) |
+| `data.previous_cwd` | `CwdChanged` (old working directory path) |
+| `data.cwd` | `CwdChanged` (new working directory path) |
+| `data.title` | `TaskCreated`, `TaskCompleted` (task content string) |
+| `data.path` | `InstructionsLoaded` (absolute file path) |
+| `data.reason` | `InstructionsLoaded` (`"session_start"`) |
 
 ## Hook decisions
 
@@ -190,4 +202,43 @@ output=$(echo "$payload" | jq -r '.data.output_tokens')
 reason=$(echo "$payload" | jq -r '.data.finish_reason')
 echo "$(date -u +%FT%TZ) step=$step input=$input output=$output reason=$reason" \
   >> /var/log/crush/steps.log
+```
+
+### React to directory changes
+
+```sh
+#!/bin/sh
+# cwd-changed hook (async: true)
+payload=$(cat)
+prev=$(echo "$payload" | jq -r '.data.previous_cwd')
+cwd=$(echo "$payload" | jq -r '.data.cwd')
+# e.g. reload direnv when cwd changes
+[ -f "$cwd/.envrc" ] && direnv allow "$cwd" > /dev/null 2>&1
+echo "$(date -u +%FT%TZ) cwd_changed from=$prev to=$cwd" >> ~/.crush/cwd.log
+```
+
+### Track task progress externally
+
+```sh
+#!/bin/sh
+# task-completed hook (async: true)
+payload=$(cat)
+title=$(echo "$payload" | jq -r '.data.title')
+session=$(echo "$payload" | jq -r '.session_id')
+curl -s -X POST "$WEBHOOK_URL" \
+  -H 'Content-Type: application/json' \
+  -d "{\"event\":\"task_completed\",\"title\":\"$title\",\"session\":\"$session\"}" \
+  > /dev/null
+```
+
+### Audit which instruction files are active
+
+```sh
+#!/bin/sh
+# instructions-loaded hook (async: true)
+payload=$(cat)
+path=$(echo "$payload" | jq -r '.data.path')
+reason=$(echo "$payload" | jq -r '.data.reason')
+echo "$(date -u +%FT%TZ) instructions_loaded path=$path reason=$reason" \
+  >> ~/.crush/instructions.log
 ```
