@@ -686,3 +686,57 @@ func TestManager_AgentError_NoHooks_Proceed(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "proceed", result.Decision)
 }
+
+// ── ContextWindowFull hook ───────────────────────────────────────────────────
+
+func TestManager_ContextWindowFull_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		ContextWindowFull: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), ContextWindowFull, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_ContextWindowFull_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "ContextWindowFull" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		ContextWindowFull: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), ContextWindowFull, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_ContextWindowFull_PayloadHasTokensAndThreshold(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+tokens=$(echo "$payload" | jq -r '.data.tokens_used')
+threshold=$(echo "$payload" | jq -r '.data.threshold')
+[ "$tokens" = "95000" ] || { echo "wrong tokens_used: $tokens" >&2; exit 2; }
+[ "$threshold" = "20000" ] || { echo "wrong threshold: $threshold" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		ContextWindowFull: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), ContextWindowFull, HookEvent{
+		SessionID:    "s1",
+		RawEventData: map[string]int64{"tokens_used": 95000, "threshold": 20000},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_ContextWindowFull_NoHooks_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{})
+	result, err := m.Execute(context.Background(), ContextWindowFull, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}

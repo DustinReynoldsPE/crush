@@ -32,6 +32,10 @@ const (
 	// Always fired asynchronously; never affects error propagation.
 	// The RawEventData payload includes an "error" field with the error string.
 	AgentError HookType = "AgentError"
+	// ContextWindowFull is executed when the context window threshold is hit
+	// and auto-summarization is about to begin. Always fired asynchronously.
+	// RawEventData includes "tokens_used" and "threshold" integer fields.
+	ContextWindowFull HookType = "ContextWindowFull"
 )
 
 // HookEvent represents the context of an event triggering a hook.

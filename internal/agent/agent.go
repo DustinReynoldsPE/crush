@@ -670,6 +670,28 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	}
 
 	if shouldSummarize {
+		// Fire ContextWindowFull hook async before summarization begins.
+		if a.hooksManager != nil {
+			tokensUsed := currentSession.CompletionTokens + currentSession.PromptTokens
+			cw := int64(largeModel.CatwalkCfg.ContextWindow)
+			var cwThreshold int64
+			if cw > largeContextWindowThreshold {
+				cwThreshold = largeContextWindowBuffer
+			} else {
+				cwThreshold = int64(float64(cw) * smallContextWindowRatio)
+			}
+			go func() {
+				if _, hookErr := a.hooksManager.Execute(context.Background(), hooks.ContextWindowFull, hooks.HookEvent{
+					SessionID: call.SessionID,
+					RawEventData: map[string]int64{
+						"tokens_used": tokensUsed,
+						"threshold":   cwThreshold,
+					},
+				}); hookErr != nil {
+					slog.Warn("ContextWindowFull hook error (non-blocking)", "error", hookErr)
+				}
+			}()
+		}
 		a.activeRequests.Del(call.SessionID)
 		if summarizeErr := a.Summarize(genCtx, call.SessionID, call.ProviderOptions); summarizeErr != nil {
 			return nil, summarizeErr
