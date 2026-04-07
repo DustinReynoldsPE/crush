@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"charm.land/fantasy"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/session"
 )
 
@@ -33,7 +34,7 @@ type TodosResponseMetadata struct {
 	Total         int            `json:"total"`
 }
 
-func NewTodosTool(sessions session.Service) fantasy.AgentTool {
+func NewTodosTool(sessions session.Service, hooksManager *hooks.Manager) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		TodosToolName,
 		string(todosDescription),
@@ -64,6 +65,7 @@ func NewTodosTool(sessions session.Service) fantasy.AgentTool {
 
 			todos := make([]session.Todo, len(params.Todos))
 			var justCompleted []string
+			var justCreated []string
 			var justStarted string
 			completedCount := 0
 
@@ -93,12 +95,39 @@ func NewTodosTool(sessions session.Service) fantasy.AgentTool {
 						}
 					}
 				}
+
+				if !existed {
+					justCreated = append(justCreated, item.Content)
+				}
 			}
 
 			currentSession.Todos = todos
 			_, err = sessions.Save(ctx, currentSession)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to save todos: %w", err)
+			}
+
+			if hooksManager != nil {
+				for _, title := range justCreated {
+					t := title
+					go func() {
+						_, _ = hooksManager.Execute(context.Background(), hooks.TaskCreated, hooks.HookEvent{
+							HookEventName: hooks.TaskCreated,
+							SessionID:     sessionID,
+							RawEventData:  map[string]string{"title": t},
+						})
+					}()
+				}
+				for _, title := range justCompleted {
+					t := title
+					go func() {
+						_, _ = hooksManager.Execute(context.Background(), hooks.TaskCompleted, hooks.HookEvent{
+							HookEventName: hooks.TaskCompleted,
+							SessionID:     sessionID,
+							RawEventData:  map[string]string{"title": t},
+						})
+					}()
+				}
 			}
 
 			response := "Todo list updated successfully.\n\n"

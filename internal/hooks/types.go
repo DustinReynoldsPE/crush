@@ -72,6 +72,14 @@ const (
 	// command (e.g. via cd). Always fired asynchronously; never blocks execution.
 	// RawEventData includes "cwd" (new directory) and "previous_cwd" (old directory).
 	CwdChanged HookType = "CwdChanged"
+	// TaskCreated is executed when a new task is added to the todo list via the
+	// todos tool. Always fired asynchronously.
+	// RawEventData includes "task_id" (content hash) and "title" (content string).
+	TaskCreated HookType = "TaskCreated"
+	// TaskCompleted is executed when a task transitions to completed status via
+	// the todos tool. Always fired asynchronously.
+	// RawEventData includes "task_id" (content hash) and "title" (content string).
+	TaskCompleted HookType = "TaskCompleted"
 )
 
 // HookEvent represents the context of an event triggering a hook.

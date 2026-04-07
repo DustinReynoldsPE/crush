@@ -1196,3 +1196,63 @@ name=$(echo "$payload" | jq -r '.hook_event_name')
 	require.NoError(t, err)
 	require.Equal(t, "proceed", result.Decision)
 }
+
+func TestManager_TaskCreated_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		TaskCreated: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), TaskCreated, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_TaskCreated_PayloadHasTitle(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+name=$(echo "$payload" | jq -r '.hook_event_name')
+[ "$name" = "TaskCreated" ] || { echo "wrong event: $name" >&2; exit 2; }
+title=$(echo "$payload" | jq -r '.data.title')
+[ "$title" = "Write tests" ] || { echo "wrong title: $title" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		TaskCreated: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), TaskCreated, HookEvent{
+		SessionID:    "s1",
+		RawEventData: map[string]string{"title": "Write tests"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_TaskCompleted_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		TaskCompleted: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), TaskCompleted, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_TaskCompleted_PayloadHasTitle(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+name=$(echo "$payload" | jq -r '.hook_event_name')
+[ "$name" = "TaskCompleted" ] || { echo "wrong event: $name" >&2; exit 2; }
+title=$(echo "$payload" | jq -r '.data.title')
+[ "$title" = "Deploy app" ] || { echo "wrong title: $title" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		TaskCompleted: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), TaskCompleted, HookEvent{
+		SessionID:    "s1",
+		RawEventData: map[string]string{"title": "Deploy app"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
