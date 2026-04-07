@@ -143,11 +143,46 @@ Hooks are configured in `crush.json` under `options.hooks`, keyed by event name:
 | `command` | string | Shell command to execute |
 | `timeout_seconds` | int | Max execution time (0 = no limit) |
 | `async` | bool | Fire-and-forget; result ignored |
+| `env` | object | Extra environment variables injected into the hook subprocess. Merged on top of the parent environment; hook values take precedence over inherited variables of the same name. |
 | `matcher.tool_name` | string | Only fire for this exact tool name |
 | `matcher.pattern` | string | Only fire when tool name matches this regex |
 | `matcher.filename` | string | (`FileChanged` only) Only fire when the changed file's basename matches exactly (e.g. `".env"`, `".envrc"`) |
 
 ## Examples
+
+### Inject secrets into hook scripts
+
+Use `env` to supply API keys and other secrets to hook scripts without exporting them into your shell profile. This is the preferred pattern for hook-specific credentials — the values are scoped to the hook subprocess and never affect your login environment.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "command": "~/.config/crush/hooks/memory-session-start.sh",
+        "timeout_seconds": 5,
+        "env": {
+          "OPENMEMORY_API_KEY": "your-api-key-here",
+          "MEMORY_HOST": "hpllm.local"
+        }
+      }
+    ],
+    "SessionEnd": [
+      {
+        "command": "~/.config/crush/hooks/memory-session-end.sh",
+        "async": true,
+        "env": {
+          "OPENMEMORY_API_KEY": "your-api-key-here"
+        }
+      }
+    ]
+  }
+}
+```
+
+The hook subprocess inherits the full parent environment. Any key listed in `env` overrides the inherited value for that key — all other parent variables remain unchanged.
+
+This pattern is particularly useful when crush is launched from a GUI or non-login shell where `.bashrc` / `.zshrc` are not sourced. The `env` block guarantees the variable is present regardless of how crush was started.
 
 ### Block dangerous shell commands
 
