@@ -76,6 +76,19 @@ func (s *ConfigStore) Overrides() *RuntimeOverrides {
 	return &s.overrides
 }
 
+// ConfigPaths returns a map of config source name to absolute file path for
+// each scope that has a configured path. The source names are "global" and
+// "workspace". Scopes with no configured path are omitted.
+func (s *ConfigStore) ConfigPaths() map[string]string {
+	paths := map[string]string{
+		"global": s.globalDataPath,
+	}
+	if s.workspacePath != "" {
+		paths["workspace"] = s.workspacePath
+	}
+	return paths
+}
+
 // configPath returns the file path for the given scope.
 func (s *ConfigStore) configPath(scope Scope) (string, error) {
 	switch scope {

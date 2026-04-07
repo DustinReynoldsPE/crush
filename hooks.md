@@ -29,6 +29,8 @@ Crush supports lifecycle hooks that let you inject custom logic at specific poin
 | `TaskCreated` | No (async) | When a new task is added to the todo list. |
 | `TaskCompleted` | No (async) | When a task transitions to completed status. |
 | `InstructionsLoaded` | No (async) | When a context/instructions file (CLAUDE.md, AGENTS.md, .cursor/rules/*.md, etc.) is loaded into the system prompt. |
+| `FileChanged` | No (async) | When a file matching the hook's `filename` matcher is created or written in the working directory. Useful for reacting to `.env`, `.envrc`, or other config file edits. |
+| `ConfigChange` | No (async) | When a crush configuration file (`crush.json`) is written — either the global user config or the workspace config. |
 
 **Blocking vs. async:** Blocking hooks run synchronously in the agent's call chain — their decision (`proceed`, `deny`, `modify`) affects control flow. Async hooks are fire-and-forget; their result is logged but never affects the agent.
 
@@ -68,8 +70,10 @@ Fields present depend on the event type:
 | `data.previous_cwd` | `CwdChanged` (old working directory path) |
 | `data.cwd` | `CwdChanged` (new working directory path) |
 | `data.title` | `TaskCreated`, `TaskCompleted` (task content string) |
-| `data.path` | `InstructionsLoaded` (absolute file path) |
+| `data.path` | `InstructionsLoaded` (absolute file path), `FileChanged` (absolute file path), `ConfigChange` (absolute file path) |
 | `data.reason` | `InstructionsLoaded` (`"session_start"`) |
+| `data.filename` | `FileChanged` (basename of the changed file, e.g. `".env"`) |
+| `data.source` | `ConfigChange` (`"global"` or `"workspace"`) |
 
 ## Hook decisions
 
@@ -141,6 +145,7 @@ Hooks are configured in `crush.json` under `options.hooks`, keyed by event name:
 | `async` | bool | Fire-and-forget; result ignored |
 | `matcher.tool_name` | string | Only fire for this exact tool name |
 | `matcher.pattern` | string | Only fire when tool name matches this regex |
+| `matcher.filename` | string | (`FileChanged` only) Only fire when the changed file's basename matches exactly (e.g. `".env"`, `".envrc"`) |
 
 ## Examples
 
@@ -242,3 +247,45 @@ reason=$(echo "$payload" | jq -r '.data.reason')
 echo "$(date -u +%FT%TZ) instructions_loaded path=$path reason=$reason" \
   >> ~/.crush/instructions.log
 ```
+
+### Reload environment when .env changes
+
+Configure the hook with a `filename` matcher so it only fires for `.env`:
+
+```json
+"FileChanged": [
+  {
+    "command": "path/to/reload_env.sh",
+    "async": true,
+    "matcher": { "filename": ".env" }
+  }
+]
+```
+
+```sh
+#!/bin/sh
+# file-changed hook (async: true)
+payload=$(cat)
+path=$(echo "$payload" | jq -r '.data.path')
+filename=$(echo "$payload" | jq -r '.data.filename')
+echo "$(date -u +%FT%TZ) file_changed filename=$filename path=$path" \
+  >> ~/.crush/files.log
+# Re-export env vars from the changed file
+set -a && . "$path" && set +a
+```
+
+Omit `matcher.filename` to fire for any file write in the working directory.
+
+### React to crush config changes
+
+```sh
+#!/bin/sh
+# config-change hook (async: true)
+payload=$(cat)
+source=$(echo "$payload" | jq -r '.data.source')
+path=$(echo "$payload" | jq -r '.data.path')
+echo "$(date -u +%FT%TZ) config_changed source=$source path=$path" \
+  >> ~/.crush/config.log
+```
+
+`data.source` is `"global"` (~/.local/share/crush/crush.json) or `"workspace"` (.crush/crush.json).

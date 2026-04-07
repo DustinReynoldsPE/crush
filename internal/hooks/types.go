@@ -85,6 +85,18 @@ const (
 	// Always fired asynchronously. RawEventData includes "path" (absolute file
 	// path) and "reason" ("session_start").
 	InstructionsLoaded HookType = "InstructionsLoaded"
+	// ConfigChange is executed when a crush configuration file is written on disk.
+	// Fires for both the global config (~/.local/share/crush/crush.json) and the
+	// workspace config (.crush/crush.json). Always fired asynchronously; never
+	// blocks execution. RawEventData includes "source" ("global" or "workspace")
+	// and "path" (absolute path to the changed config file).
+	ConfigChange HookType = "ConfigChange"
+	// FileChanged is executed when a watched file is created or modified on disk.
+	// The hook fires when a file whose basename matches the hook's Filename
+	// matcher is written or created in the working directory. Always fired
+	// asynchronously; never blocks execution.
+	// RawEventData includes "path" (absolute path) and "filename" (basename).
+	FileChanged HookType = "FileChanged"
 )
 
 // HookEvent represents the context of an event triggering a hook.

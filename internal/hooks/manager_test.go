@@ -1257,6 +1257,94 @@ title=$(echo "$payload" | jq -r '.data.title')
 	require.Equal(t, "proceed", result.Decision)
 }
 
+func TestManager_FileChanged_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		FileChanged: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), FileChanged, HookEvent{
+		SessionID:    "s1",
+		RawEventData: map[string]string{"path": "/work/.env", "filename": ".env"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_FileChanged_PayloadHasPathAndFilename(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+name=$(echo "$payload" | jq -r '.hook_event_name')
+[ "$name" = "FileChanged" ] || { echo "wrong event: $name" >&2; exit 2; }
+path=$(echo "$payload" | jq -r '.data.path')
+[ "$path" = "/work/.env" ] || { echo "wrong path: $path" >&2; exit 2; }
+filename=$(echo "$payload" | jq -r '.data.filename')
+[ "$filename" = ".env" ] || { echo "wrong filename: $filename" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		FileChanged: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), FileChanged, HookEvent{
+		SessionID: "s1",
+		RawEventData: map[string]string{
+			"path":     "/work/.env",
+			"filename": ".env",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_FileChanged_FilenameMatcherFires(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		FileChanged: {{Command: "true", Matcher: HookMatcher{Filename: ".env"}}},
+	})
+	result, err := m.Execute(context.Background(), FileChanged, HookEvent{
+		SessionID:    "s1",
+		RawEventData: map[string]string{"path": "/work/.env", "filename": ".env"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_FileChanged_FilenameMatcherSkipsNonMatch(t *testing.T) {
+	t.Parallel()
+	// Hook configured for ".envrc" should not fire for ".env".
+	script := writeScript(t, `#!/bin/sh
+echo "should not run" >&2
+exit 1
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		FileChanged: {{Command: script, Matcher: HookMatcher{Filename: ".envrc"}}},
+	})
+	result, err := m.Execute(context.Background(), FileChanged, HookEvent{
+		SessionID:    "s1",
+		RawEventData: map[string]string{"path": "/work/.env", "filename": ".env"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_FileChanged_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+name=$(echo "$payload" | jq -r '.hook_event_name')
+[ "$name" = "FileChanged" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		FileChanged: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), FileChanged, HookEvent{
+		HookEventName: FileChanged,
+		SessionID:     "s1",
+		RawEventData:  map[string]string{"path": "/work/.env", "filename": ".env"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
 func TestManager_InstructionsLoaded_Proceed(t *testing.T) {
 	t.Parallel()
 	m := NewManager(map[HookType][]HookConfig{

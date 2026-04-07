@@ -143,10 +143,18 @@ func (m *Manager) Execute(ctx context.Context, hookType HookType, event HookEven
 // matchesEvent returns true if hookCfg should fire for this event.
 // A hook with no matcher fires for all events of its type.
 // ToolName is an exact match; Pattern is a regexp match against event.ToolName.
+// Filename is an exact match against the "filename" key in RawEventData (FileChanged events).
 func (m *Manager) matchesEvent(hookCfg HookConfig, event HookEvent) bool {
 	matcher := hookCfg.Matcher
-	if matcher.ToolName == "" && matcher.Pattern == "" {
+	if matcher.ToolName == "" && matcher.Pattern == "" && matcher.Filename == "" {
 		return true
+	}
+	if matcher.Filename != "" {
+		data, ok := event.RawEventData.(map[string]string)
+		if !ok {
+			return false
+		}
+		return data["filename"] == matcher.Filename
 	}
 	if matcher.ToolName != "" {
 		return matcher.ToolName == event.ToolName

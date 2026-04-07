@@ -106,6 +106,8 @@ func NewCoordinator(
 ) (Coordinator, error) {
 	hooksManager := hooks.NewManager(buildHooksMap(cfg.Config().Options.Hooks), hooks.WithPublisher(hookNotify))
 	permissions.SetHooksManager(hooksManager)
+	hooks.StartFileWatcher(ctx, hooksManager, cfg.WorkingDir())
+	hooks.StartConfigWatcher(ctx, hooksManager, cfg.ConfigPaths())
 
 	c := &coordinator{
 		cfg:          cfg,

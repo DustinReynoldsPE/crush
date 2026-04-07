@@ -9,6 +9,9 @@ type HookMatcher struct {
 	MatcherType string `json:"matcher_type,omitempty"`
 	// Pattern is the pattern to match against (e.g., a regex pattern for tool names).
 	Pattern string `json:"pattern,omitempty"`
+	// Filename matches FileChanged events by the file's basename (e.g. ".env", ".envrc").
+	// If empty, all FileChanged events match this hook.
+	Filename string `json:"filename,omitempty"`
 }
 
 // HookConfig defines the configuration for a single hook script.
