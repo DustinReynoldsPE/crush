@@ -836,3 +836,89 @@ output=$(echo "$payload" | jq -r '.data.output_tokens')
 	require.NoError(t, err)
 	require.Equal(t, "proceed", result.Decision)
 }
+
+// ── StopFailure hook ─────────────────────────────────────────────────────────
+
+func TestManager_StopFailure_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		StopFailure: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), StopFailure, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_StopFailure_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "StopFailure" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		StopFailure: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), StopFailure, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_StopFailure_PayloadHasErrorAndFinishReason(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+errMsg=$(echo "$payload" | jq -r '.data.error')
+reason=$(echo "$payload" | jq -r '.data.finish_reason')
+[ -n "$errMsg" ] && [ "$errMsg" != "null" ] || { echo "missing error" >&2; exit 2; }
+[ "$reason" = "error" ] || { echo "wrong finish_reason: $reason" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		StopFailure: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), StopFailure, HookEvent{
+		SessionID:    "s1",
+		RawEventData: map[string]string{"error": "provider returned 503", "finish_reason": "error"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+// ── SessionEnd hook ──────────────────────────────────────────────────────────
+
+func TestManager_SessionEnd_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		SessionEnd: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), SessionEnd, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_SessionEnd_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "SessionEnd" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		SessionEnd: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), SessionEnd, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_SessionEnd_PayloadHasSessionID(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+sid=$(cat | jq -r '.session_id')
+[ "$sid" = "end-session-42" ] || { echo "wrong session_id: $sid" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		SessionEnd: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), SessionEnd, HookEvent{SessionID: "end-session-42"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}

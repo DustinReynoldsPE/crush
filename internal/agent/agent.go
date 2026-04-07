@@ -660,6 +660,31 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		if updateErr != nil {
 			return nil, updateErr
 		}
+		// Fire StopFailure for genuine errors (not cancel or permission denial).
+		if !isCancelErr && !isPermissionErr && a.hooksManager != nil {
+			errMsg := err.Error()
+			go func() {
+				if _, hookErr := a.hooksManager.Execute(context.Background(), hooks.StopFailure, hooks.HookEvent{
+					SessionID: call.SessionID,
+					RawEventData: map[string]string{
+						"error":         errMsg,
+						"finish_reason": "error",
+					},
+				}); hookErr != nil {
+					slog.Warn("StopFailure hook error (non-blocking)", "error", hookErr)
+				}
+			}()
+		}
+		// Fire SessionEnd on the error exit path (not for cancel/permission).
+		if !isCancelErr && !isPermissionErr && a.hooksManager != nil {
+			go func() {
+				if _, hookErr := a.hooksManager.Execute(context.Background(), hooks.SessionEnd, hooks.HookEvent{
+					SessionID: call.SessionID,
+				}); hookErr != nil {
+					slog.Warn("SessionEnd hook error (non-blocking)", "error", hookErr)
+				}
+			}()
+		}
 		return nil, err
 	}
 
@@ -746,6 +771,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 
 	queuedMessages, ok := a.messageQueue.Get(call.SessionID)
 	if !ok || len(queuedMessages) == 0 {
+		// No more queued prompts — this is the true end of the session's work.
+		if a.hooksManager != nil {
+			go func() {
+				if _, hookErr := a.hooksManager.Execute(context.Background(), hooks.SessionEnd, hooks.HookEvent{
+					SessionID: call.SessionID,
+				}); hookErr != nil {
+					slog.Warn("SessionEnd hook error (non-blocking)", "error", hookErr)
+				}
+			}()
+		}
 		return result, err
 	}
 	// There are queued messages restart the loop.

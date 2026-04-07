@@ -44,6 +44,17 @@ const (
 	// asynchronously. RawEventData includes "step_index", "finish_reason",
 	// "input_tokens", and "output_tokens".
 	PostStep HookType = "PostStep"
+	// StopFailure is executed when the agent turn ends due to a genuine error
+	// (API failure, rate limit, billing, provider error). It is the error-path
+	// bookend to the Stop hook. Not fired for context.Canceled or permission
+	// denials. Always fired asynchronously.
+	// RawEventData includes "error" string and "finish_reason".
+	StopFailure HookType = "StopFailure"
+	// SessionEnd is executed when a session turn completes and no further
+	// queued prompts remain — effectively the end of a session's work unit.
+	// Fires on both success and error paths (except context cancellations).
+	// Always fired asynchronously.
+	SessionEnd HookType = "SessionEnd"
 )
 
 // HookEvent represents the context of an event triggering a hook.
