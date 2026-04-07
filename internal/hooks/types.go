@@ -55,6 +55,19 @@ const (
 	// Fires on both success and error paths (except context cancellations).
 	// Always fired asynchronously.
 	SessionEnd HookType = "SessionEnd"
+	// PreCompact is executed before context compaction (summarization) begins,
+	// for both automatic (context-window-full) and manual triggers.
+	// Always fired asynchronously. RawEventData includes "trigger" ("auto" or "manual").
+	PreCompact HookType = "PreCompact"
+	// PostCompact is executed after context compaction completes successfully.
+	// Always fired asynchronously. RawEventData includes "trigger" ("auto" or "manual").
+	PostCompact HookType = "PostCompact"
+	// SubagentStart is executed when a sub-agent session is spawned.
+	// Always fired asynchronously. RawEventData includes "agent_session_id".
+	SubagentStart HookType = "SubagentStart"
+	// SubagentStop is executed when a sub-agent session finishes (success or error).
+	// Always fired asynchronously. RawEventData includes "agent_session_id".
+	SubagentStop HookType = "SubagentStop"
 )
 
 // HookEvent represents the context of an event triggering a hook.

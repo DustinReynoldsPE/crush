@@ -19,6 +19,10 @@ Crush supports lifecycle hooks that let you inject custom logic at specific poin
 | `ContextWindowFull` | No (async) | When the context window threshold is crossed and auto-summarization is about to begin. |
 | `PreStep` | No (async) | Before each LLM inference call in the agent loop. Fires once per step. |
 | `PostStep` | No (async) | After each agent step completes. Fires once per step with token usage. |
+| `PreCompact` | No (async) | Before context compaction (summarization) begins, for both automatic (context window full) and manual triggers. |
+| `PostCompact` | No (async) | After context compaction completes successfully. Not fired if compaction fails. |
+| `SubagentStart` | No (async) | When a sub-agent session is spawned (multi-agent tool use). |
+| `SubagentStop` | No (async) | When a sub-agent session finishes, on both success and error. |
 
 **Blocking vs. async:** Blocking hooks run synchronously in the agent's call chain — their decision (`proceed`, `deny`, `modify`) affects control flow. Async hooks are fire-and-forget; their result is logged but never affects the agent.
 
@@ -52,6 +56,8 @@ Fields present depend on the event type:
 | `data.finish_reason` | `PostStep` (string: `"stop"`, `"tool-calls"`, `"length"`, etc.) |
 | `data.input_tokens` | `PostStep` (integer) |
 | `data.output_tokens` | `PostStep` (integer) |
+| `data.trigger` | `PreCompact`, `PostCompact` (`"auto"` or `"manual"`) |
+| `data.agent_session_id` | `SubagentStart`, `SubagentStop` (sub-session ID string) |
 
 ## Hook decisions
 

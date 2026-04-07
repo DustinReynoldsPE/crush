@@ -1000,3 +1000,146 @@ func TestManager_Publisher_DenyComplete_DecisionAndReason(t *testing.T) {
 	require.Equal(t, "deny", complete.Decision)
 	require.Contains(t, complete.Reason, "access denied")
 }
+
+// ── PreCompact hook ───────────────────────────────────────────────────────────
+
+func TestManager_PreCompact_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PreCompact: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), PreCompact, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_PreCompact_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "PreCompact" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		PreCompact: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), PreCompact, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_PreCompact_PayloadHasTrigger(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+trigger=$(cat | jq -r '.data.trigger')
+[ "$trigger" = "auto" ] || [ "$trigger" = "manual" ] || { echo "bad trigger: $trigger" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		PreCompact: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), PreCompact, HookEvent{
+		SessionID:    "s1",
+		RawEventData: map[string]string{"trigger": "auto"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+// ── PostCompact hook ──────────────────────────────────────────────────────────
+
+func TestManager_PostCompact_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PostCompact: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), PostCompact, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_PostCompact_PayloadHasTrigger(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+trigger=$(cat | jq -r '.data.trigger')
+[ "$trigger" = "manual" ] || { echo "bad trigger: $trigger" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		PostCompact: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), PostCompact, HookEvent{
+		SessionID:    "s1",
+		RawEventData: map[string]string{"trigger": "manual"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+// ── SubagentStart hook ────────────────────────────────────────────────────────
+
+func TestManager_SubagentStart_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		SubagentStart: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), SubagentStart, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_SubagentStart_PayloadHasAgentSessionID(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "SubagentStart" ] || { echo "wrong event: $name" >&2; exit 2; }
+sid=$(cat | jq -r '.data.agent_session_id' 2>/dev/null || echo "")
+[ -n "$sid" ] || sid=$(echo '{"data":{"agent_session_id":"sub-42"}}' | jq -r '.data.agent_session_id')
+`)
+	script2 := writeScript(t, `#!/bin/sh
+payload=$(cat)
+name=$(echo "$payload" | jq -r '.hook_event_name')
+[ "$name" = "SubagentStart" ] || { echo "wrong event: $name" >&2; exit 2; }
+agent_sid=$(echo "$payload" | jq -r '.data.agent_session_id')
+[ "$agent_sid" = "sub-42" ] || { echo "wrong agent_session_id: $agent_sid" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		SubagentStart: {{Command: script2}},
+	})
+	_ = script
+	result, err := m.Execute(context.Background(), SubagentStart, HookEvent{
+		SessionID:    "parent-session",
+		RawEventData: map[string]string{"agent_session_id": "sub-42"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+// ── SubagentStop hook ─────────────────────────────────────────────────────────
+
+func TestManager_SubagentStop_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		SubagentStop: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), SubagentStop, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_SubagentStop_PayloadHasAgentSessionID(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+name=$(echo "$payload" | jq -r '.hook_event_name')
+[ "$name" = "SubagentStop" ] || { echo "wrong event: $name" >&2; exit 2; }
+agent_sid=$(echo "$payload" | jq -r '.data.agent_session_id')
+[ "$agent_sid" = "sub-99" ] || { echo "wrong agent_session_id: $agent_sid" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		SubagentStop: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), SubagentStop, HookEvent{
+		SessionID:    "parent-session",
+		RawEventData: map[string]string{"agent_session_id": "sub-99"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}

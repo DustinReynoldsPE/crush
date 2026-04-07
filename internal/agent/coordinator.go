@@ -926,7 +926,28 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
 	if !ok {
 		return errModelProviderNotConfigured
 	}
-	return c.currentAgent.Summarize(ctx, sessionID, getProviderOptions(c.currentAgent.Model(), providerCfg))
+	if c.hooksManager != nil {
+		go func() {
+			if _, hookErr := c.hooksManager.Execute(context.Background(), hooks.PreCompact, hooks.HookEvent{
+				SessionID:    sessionID,
+				RawEventData: map[string]string{"trigger": "manual"},
+			}); hookErr != nil {
+				slog.Warn("PreCompact hook error (non-blocking)", "error", hookErr)
+			}
+		}()
+	}
+	err := c.currentAgent.Summarize(ctx, sessionID, getProviderOptions(c.currentAgent.Model(), providerCfg))
+	if err == nil && c.hooksManager != nil {
+		go func() {
+			if _, hookErr := c.hooksManager.Execute(context.Background(), hooks.PostCompact, hooks.HookEvent{
+				SessionID:    sessionID,
+				RawEventData: map[string]string{"trigger": "manual"},
+			}); hookErr != nil {
+				slog.Warn("PostCompact hook error (non-blocking)", "error", hookErr)
+			}
+		}()
+	}
+	return err
 }
 
 func (c *coordinator) isUnauthorized(err error) bool {
@@ -990,6 +1011,18 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		params.SessionSetup(session.ID)
 	}
 
+	// Fire SubagentStart async after session creation.
+	if c.hooksManager != nil {
+		go func() {
+			if _, hookErr := c.hooksManager.Execute(context.Background(), hooks.SubagentStart, hooks.HookEvent{
+				SessionID:    params.SessionID,
+				RawEventData: map[string]string{"agent_session_id": session.ID},
+			}); hookErr != nil {
+				slog.Warn("SubagentStart hook error (non-blocking)", "error", hookErr)
+			}
+		}()
+	}
+
 	// Get model configuration
 	model := params.Agent.Model()
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
@@ -1015,6 +1048,18 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		PresencePenalty:  model.ModelCfg.PresencePenalty,
 		NonInteractive:   true,
 	})
+	// Fire SubagentStop async regardless of success or error.
+	if c.hooksManager != nil {
+		go func() {
+			if _, hookErr := c.hooksManager.Execute(context.Background(), hooks.SubagentStop, hooks.HookEvent{
+				SessionID:    params.SessionID,
+				RawEventData: map[string]string{"agent_session_id": session.ID},
+			}); hookErr != nil {
+				slog.Warn("SubagentStop hook error (non-blocking)", "error", hookErr)
+			}
+		}()
+	}
+
 	if err != nil {
 		return fantasy.NewTextErrorResponse("error generating response"), nil
 	}

@@ -750,8 +750,28 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			}()
 		}
 		a.activeRequests.Del(call.SessionID)
+		if a.hooksManager != nil {
+			go func() {
+				if _, hookErr := a.hooksManager.Execute(context.Background(), hooks.PreCompact, hooks.HookEvent{
+					SessionID:    call.SessionID,
+					RawEventData: map[string]string{"trigger": "auto"},
+				}); hookErr != nil {
+					slog.Warn("PreCompact hook error (non-blocking)", "error", hookErr)
+				}
+			}()
+		}
 		if summarizeErr := a.Summarize(genCtx, call.SessionID, call.ProviderOptions); summarizeErr != nil {
 			return nil, summarizeErr
+		}
+		if a.hooksManager != nil {
+			go func() {
+				if _, hookErr := a.hooksManager.Execute(context.Background(), hooks.PostCompact, hooks.HookEvent{
+					SessionID:    call.SessionID,
+					RawEventData: map[string]string{"trigger": "auto"},
+				}); hookErr != nil {
+					slog.Warn("PostCompact hook error (non-blocking)", "error", hookErr)
+				}
+			}()
 		}
 		// If the agent wasn't done...
 		if len(currentAssistant.ToolCalls()) > 0 {
