@@ -280,6 +280,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 
 	var currentAssistant *message.Message
 	var shouldSummarize bool
+	var stepCounter int
 	result, err := agent.Stream(genCtx, fantasy.AgentStreamCall{
 		Prompt:           message.PromptWithTextAttachments(call.Prompt, call.Attachments),
 		Files:            files,
@@ -346,6 +347,18 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			callContext = context.WithValue(callContext, tools.SupportsImagesContextKey, largeModel.CatwalkCfg.SupportsImages)
 			callContext = context.WithValue(callContext, tools.ModelNameContextKey, largeModel.CatwalkCfg.Name)
 			currentAssistant = &assistantMsg
+			// Fire PreStep hook async before the LLM call.
+			if a.hooksManager != nil {
+				stepIdx := options.StepNumber
+				go func() {
+					if _, hookErr := a.hooksManager.Execute(context.Background(), hooks.PreStep, hooks.HookEvent{
+						SessionID:    call.SessionID,
+						RawEventData: map[string]int{"step_index": stepIdx},
+					}); hookErr != nil {
+						slog.Warn("PreStep hook error (non-blocking)", "error", hookErr)
+					}
+				}()
+			}
 			return callContext, prepared, err
 		},
 		OnReasoningStart: func(id string, reasoning fantasy.ReasoningContent) error {
@@ -490,6 +503,25 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 				return sessionErr
 			}
 			currentSession = updatedSession
+			// Fire PostStep hook async after each step completes.
+			if a.hooksManager != nil {
+				stepIdx := stepCounter
+				stepCounter++
+				finishReasonStr := string(stepResult.FinishReason)
+				go func() {
+					if _, hookErr := a.hooksManager.Execute(context.Background(), hooks.PostStep, hooks.HookEvent{
+						SessionID: call.SessionID,
+						RawEventData: map[string]any{
+							"step_index":    stepIdx,
+							"finish_reason": finishReasonStr,
+							"input_tokens":  stepResult.Usage.InputTokens,
+							"output_tokens": stepResult.Usage.OutputTokens,
+						},
+					}); hookErr != nil {
+						slog.Warn("PostStep hook error (non-blocking)", "error", hookErr)
+					}
+				}()
+			}
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
 		StopWhen: []fantasy.StopCondition{

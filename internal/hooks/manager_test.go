@@ -740,3 +740,99 @@ func TestManager_ContextWindowFull_NoHooks_Proceed(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "proceed", result.Decision)
 }
+
+// ── PreStep / PostStep hooks ─────────────────────────────────────────────────
+
+func TestManager_PreStep_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PreStep: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), PreStep, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_PostStep_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PostStep: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), PostStep, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_PreStep_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "PreStep" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		PreStep: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), PreStep, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_PostStep_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "PostStep" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		PostStep: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), PostStep, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_PreStep_PayloadHasStepIndex(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+idx=$(cat | jq -r '.data.step_index')
+[ "$idx" = "2" ] || { echo "wrong step_index: $idx" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		PreStep: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), PreStep, HookEvent{
+		SessionID:    "s1",
+		RawEventData: map[string]int{"step_index": 2},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_PostStep_PayloadHasStepIndexFinishReasonAndUsage(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+idx=$(echo "$payload" | jq -r '.data.step_index')
+reason=$(echo "$payload" | jq -r '.data.finish_reason')
+input=$(echo "$payload" | jq -r '.data.input_tokens')
+output=$(echo "$payload" | jq -r '.data.output_tokens')
+[ "$idx" = "1" ] || { echo "wrong step_index: $idx" >&2; exit 2; }
+[ "$reason" = "stop" ] || { echo "wrong finish_reason: $reason" >&2; exit 2; }
+[ "$input" = "1500" ] || { echo "wrong input_tokens: $input" >&2; exit 2; }
+[ "$output" = "300" ] || { echo "wrong output_tokens: $output" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		PostStep: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), PostStep, HookEvent{
+		SessionID: "s1",
+		RawEventData: map[string]any{
+			"step_index":    1,
+			"finish_reason": "stop",
+			"input_tokens":  1500,
+			"output_tokens": 300,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}

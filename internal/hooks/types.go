@@ -36,6 +36,14 @@ const (
 	// and auto-summarization is about to begin. Always fired asynchronously.
 	// RawEventData includes "tokens_used" and "threshold" integer fields.
 	ContextWindowFull HookType = "ContextWindowFull"
+	// PreStep is executed before each LLM inference call (once per agent loop
+	// iteration). Always fired asynchronously. RawEventData includes
+	// "step_index" (0-based integer).
+	PreStep HookType = "PreStep"
+	// PostStep is executed after each agent step completes. Always fired
+	// asynchronously. RawEventData includes "step_index", "finish_reason",
+	// "input_tokens", and "output_tokens".
+	PostStep HookType = "PostStep"
 )
 
 // HookEvent represents the context of an event triggering a hook.
