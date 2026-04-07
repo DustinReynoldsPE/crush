@@ -26,6 +26,11 @@ type HookConfig struct {
 	// is ignored and the chain continues immediately. Useful for logging or
 	// notification hooks where the outcome does not affect the agent.
 	Async bool `json:"async,omitempty"`
+	// Env specifies additional environment variables to inject into the hook
+	// subprocess. These are merged on top of the parent process environment,
+	// with values here taking precedence over any inherited variable of the
+	// same name.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // HookSet groups configurations by HookType.

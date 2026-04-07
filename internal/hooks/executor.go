@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -37,6 +39,24 @@ func (e *Executor) Execute(ctx context.Context, hookCfg HookConfig, event HookEv
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", hookCfg.Command)
 	cmd.WaitDelay = waitDelay
+
+	if len(hookCfg.Env) > 0 {
+		// Start from parent environment, then override with hook-specific vars.
+		// Filter out any parent keys that are being overridden so the subprocess
+		// sees exactly one binding per name, with the hook value taking precedence.
+		parent := os.Environ()
+		merged := make([]string, 0, len(parent)+len(hookCfg.Env))
+		for _, entry := range parent {
+			key, _, _ := strings.Cut(entry, "=")
+			if _, overridden := hookCfg.Env[key]; !overridden {
+				merged = append(merged, entry)
+			}
+		}
+		for k, v := range hookCfg.Env {
+			merged = append(merged, k+"="+v)
+		}
+		cmd.Env = merged
+	}
 
 	payload, err := json.Marshal(event)
 	if err != nil {

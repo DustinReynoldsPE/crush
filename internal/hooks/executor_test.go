@@ -205,6 +205,80 @@ func TestHookEvent_JSONMarshal_SnakeCaseKeys(t *testing.T) {
 	require.NotNil(t, parsed["tool_input"])
 }
 
+// ── Env injection ────────────────────────────────────────────────────────────
+
+func TestExecutor_Env_InjectedIntoSubprocess(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+[ "$CRUSH_HOOK_SECRET" = "hunter2" ] || { echo "wrong: $CRUSH_HOOK_SECRET" >&2; exit 2; }
+`)
+	cfg := HookConfig{Command: script, Env: map[string]string{"CRUSH_HOOK_SECRET": "hunter2"}}
+	result, err := NewExecutor().Execute(context.Background(), cfg, newEvent(SessionStart, "s1", ""))
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestExecutor_Env_MultipleVarsAllVisible(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+[ "$CRUSH_KEY_A" = "alpha" ] && [ "$CRUSH_KEY_B" = "beta" ] || { echo "missing vars" >&2; exit 2; }
+`)
+	cfg := HookConfig{Command: script, Env: map[string]string{"CRUSH_KEY_A": "alpha", "CRUSH_KEY_B": "beta"}}
+	result, err := NewExecutor().Execute(context.Background(), cfg, newEvent(SessionStart, "s1", ""))
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestExecutor_Env_ParentEnvStillInherited(t *testing.T) {
+	t.Parallel()
+	// PATH must be present or sh can't find any commands — proves parent env is kept.
+	script := writeScript(t, `#!/bin/sh
+[ -n "$PATH" ] || { echo "PATH missing" >&2; exit 2; }
+`)
+	cfg := HookConfig{Command: script, Env: map[string]string{"CRUSH_EXTRA": "injected"}}
+	result, err := NewExecutor().Execute(context.Background(), cfg, newEvent(SessionStart, "s1", ""))
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestExecutor_Env_OverridesParentVar(t *testing.T) {
+	t.Setenv("CRUSH_OVERRIDE_TEST", "original")
+	script := writeScript(t, `#!/bin/sh
+[ "$CRUSH_OVERRIDE_TEST" = "overridden" ] || { echo "got: $CRUSH_OVERRIDE_TEST" >&2; exit 2; }
+`)
+	cfg := HookConfig{Command: script, Env: map[string]string{"CRUSH_OVERRIDE_TEST": "overridden"}}
+	result, err := NewExecutor().Execute(context.Background(), cfg, newEvent(SessionStart, "s1", ""))
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestExecutor_Env_NilMap_NoRegression(t *testing.T) {
+	t.Parallel()
+	result, err := NewExecutor().Execute(context.Background(), HookConfig{Command: "true"}, newEvent(PreToolUse, "s1", "bash"))
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestHookConfig_Env_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+	cfg := HookConfig{
+		Command: "my-hook.sh",
+		Env:     map[string]string{"API_KEY": "secret", "HOST": "localhost"},
+	}
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	var decoded HookConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, cfg.Env, decoded.Env)
+}
+
+func TestHookConfig_Env_OmittedFromJSONWhenNil(t *testing.T) {
+	t.Parallel()
+	data, err := json.Marshal(HookConfig{Command: "script.sh"})
+	require.NoError(t, err)
+	require.NotContains(t, string(data), `"env"`)
+}
+
 func TestHookEvent_EmptyOptionals_OmittedFromJSON(t *testing.T) {
 	t.Parallel()
 	event := HookEvent{SessionID: "s1"}
