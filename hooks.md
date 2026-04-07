@@ -17,6 +17,8 @@ Crush supports lifecycle hooks that let you inject custom logic at specific poin
 | `Notification` | No (async) | When the agent finishes a turn and would surface a user notification. Enables routing to Slack, ntfy, desktop notifiers, etc. |
 | `AgentError` | No (async) | When `agent.Stream()` returns a genuine error (API failure, network error, provider error). Not fired for context cancellations or permission denials. |
 | `ContextWindowFull` | No (async) | When the context window threshold is crossed and auto-summarization is about to begin. |
+| `PreStep` | No (async) | Before each LLM inference call in the agent loop. Fires once per step. |
+| `PostStep` | No (async) | After each agent step completes. Fires once per step with token usage. |
 
 **Blocking vs. async:** Blocking hooks run synchronously in the agent's call chain — their decision (`proceed`, `deny`, `modify`) affects control flow. Async hooks are fire-and-forget; their result is logged but never affects the agent.
 
@@ -46,6 +48,10 @@ Fields present depend on the event type:
 | `data.error` | `AgentError` (error string) |
 | `data.tokens_used` | `ContextWindowFull` (integer) |
 | `data.threshold` | `ContextWindowFull` (integer) |
+| `data.step_index` | `PreStep`, `PostStep` (0-based integer) |
+| `data.finish_reason` | `PostStep` (string: `"stop"`, `"tool-calls"`, `"length"`, etc.) |
+| `data.input_tokens` | `PostStep` (integer) |
+| `data.output_tokens` | `PostStep` (integer) |
 
 ## Hook decisions
 
@@ -96,6 +102,12 @@ Hooks are configured in `crush.json` under `options.hooks`, keyed by event name:
       ],
       "ContextWindowFull": [
         { "command": "path/to/log_context_pressure.sh", "async": true }
+      ],
+      "PreStep": [
+        { "command": "path/to/log_step_start.sh", "async": true }
+      ],
+      "PostStep": [
+        { "command": "path/to/track_token_usage.sh", "async": true }
       ]
     }
   }
@@ -158,4 +170,18 @@ tokens=$(echo "$payload" | jq -r '.data.tokens_used')
 threshold=$(echo "$payload" | jq -r '.data.threshold')
 echo "$(date -u +%FT%TZ) context_window_full tokens=$tokens threshold=$threshold" \
   >> /var/log/crush/context.log
+```
+
+### Track per-step token usage
+
+```sh
+#!/bin/sh
+# post-step hook (async: true)
+payload=$(cat)
+step=$(echo "$payload" | jq -r '.data.step_index')
+input=$(echo "$payload" | jq -r '.data.input_tokens')
+output=$(echo "$payload" | jq -r '.data.output_tokens')
+reason=$(echo "$payload" | jq -r '.data.finish_reason')
+echo "$(date -u +%FT%TZ) step=$step input=$input output=$output reason=$reason" \
+  >> /var/log/crush/steps.log
 ```
