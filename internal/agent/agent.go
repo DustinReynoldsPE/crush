@@ -221,6 +221,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 		return nil, fmt.Errorf("failed to get session messages: %w", err)
 	}
 
+	// Fire SessionStart hook before any prompt processing or title generation.
+	if a.hooksManager != nil {
+		hookResult, hookErr := a.hooksManager.Execute(ctx, hooks.SessionStart, hooks.HookEvent{
+			SessionID: call.SessionID,
+		})
+		if hookErr != nil {
+			return nil, hookErr
+		}
+		if hookResult.Decision == "deny" {
+			return nil, fmt.Errorf("session start denied: %s", hookResult.Reason)
+		}
+	}
+
 	var wg sync.WaitGroup
 	// Generate title if first message.
 	if len(msgs) == 0 {

@@ -4,6 +4,9 @@ package hooks
 type HookType = string
 
 const (
+	// SessionStart is executed once at the start of Run(), before any user input is processed.
+	// It is blocking: a deny result aborts the session immediately.
+	SessionStart HookType = "SessionStart"
 	// UserPromptSubmit is executed after the user sends a prompt, before agent processing.
 	UserPromptSubmit HookType = "UserPromptSubmit"
 	// PreToolUse is executed before a tool is called.

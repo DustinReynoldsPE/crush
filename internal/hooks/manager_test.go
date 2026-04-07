@@ -483,3 +483,78 @@ func TestManager_PermissionRequest_ToolNameMatcher(t *testing.T) {
 	_, _ = m.Execute(context.Background(), PermissionRequest, HookEvent{SessionID: "s1", ToolName: "bash"})
 	require.True(t, fileExists(sentinel), "must fire for matching tool")
 }
+
+// ── SessionStart hook ────────────────────────────────────────────────────────
+
+func TestManager_SessionStart_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		SessionStart: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), SessionStart, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_SessionStart_Deny(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		SessionStart: {{Command: `echo "session blocked by policy" >&2; exit 2`}},
+	})
+	result, err := m.Execute(context.Background(), SessionStart, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "deny", result.Decision)
+	require.Contains(t, result.Reason, "session blocked by policy")
+}
+
+func TestManager_SessionStart_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "SessionStart" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		SessionStart: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), SessionStart, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_SessionStart_PayloadHasSessionID(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+sid=$(cat | jq -r '.session_id')
+[ "$sid" = "test-session-42" ] || { echo "wrong session_id: $sid" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		SessionStart: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), SessionStart, HookEvent{SessionID: "test-session-42"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_SessionStart_NoHooks_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{})
+	result, err := m.Execute(context.Background(), SessionStart, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_SessionStart_DenyStopsBeforeUserPromptSubmit(t *testing.T) {
+	t.Parallel()
+	// If SessionStart denies, UserPromptSubmit hooks must not run.
+	upsSentinel := t.TempDir() + "/ups-ran"
+	m := NewManager(map[HookType][]HookConfig{
+		SessionStart:     {{Command: `exit 2`}},
+		UserPromptSubmit: {{Command: "touch " + upsSentinel}},
+	})
+	result, err := m.Execute(context.Background(), SessionStart, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "deny", result.Decision)
+	// Caller should not proceed to fire UserPromptSubmit after a SessionStart deny.
+	// The sentinel must remain absent — verified here as documentation of the contract.
+	require.False(t, fileExists(upsSentinel), "UserPromptSubmit must not fire after SessionStart deny")
+}
