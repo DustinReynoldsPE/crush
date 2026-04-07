@@ -1143,3 +1143,56 @@ agent_sid=$(echo "$payload" | jq -r '.data.agent_session_id')
 	require.NoError(t, err)
 	require.Equal(t, "proceed", result.Decision)
 }
+
+func TestManager_CwdChanged_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		CwdChanged: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), CwdChanged, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_CwdChanged_PayloadHasCwdFields(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+name=$(echo "$payload" | jq -r '.hook_event_name')
+[ "$name" = "CwdChanged" ] || { echo "wrong event: $name" >&2; exit 2; }
+cwd=$(echo "$payload" | jq -r '.data.cwd')
+[ "$cwd" = "/tmp/new" ] || { echo "wrong cwd: $cwd" >&2; exit 2; }
+prev=$(echo "$payload" | jq -r '.data.previous_cwd')
+[ "$prev" = "/tmp/old" ] || { echo "wrong previous_cwd: $prev" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		CwdChanged: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), CwdChanged, HookEvent{
+		SessionID: "s1",
+		RawEventData: map[string]string{
+			"previous_cwd": "/tmp/old",
+			"cwd":          "/tmp/new",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_CwdChanged_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+name=$(echo "$payload" | jq -r '.hook_event_name')
+[ "$name" = "CwdChanged" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		CwdChanged: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), CwdChanged, HookEvent{
+		HookEventName: CwdChanged,
+		SessionID:     "s1",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}

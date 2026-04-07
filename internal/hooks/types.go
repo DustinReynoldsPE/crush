@@ -68,6 +68,10 @@ const (
 	// SubagentStop is executed when a sub-agent session finishes (success or error).
 	// Always fired asynchronously. RawEventData includes "agent_session_id".
 	SubagentStop HookType = "SubagentStop"
+	// CwdChanged is executed when the working directory changes after a Bash
+	// command (e.g. via cd). Always fired asynchronously; never blocks execution.
+	// RawEventData includes "cwd" (new directory) and "previous_cwd" (old directory).
+	CwdChanged HookType = "CwdChanged"
 )
 
 // HookEvent represents the context of an event triggering a hook.

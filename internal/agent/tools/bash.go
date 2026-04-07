@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/fsext"
 	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/shell"
 )
 
@@ -188,7 +189,7 @@ func blockFuncs() []shell.BlockFunc {
 	}
 }
 
-func NewBashTool(permissions permission.Service, workingDir string, attribution *config.Attribution, modelName string) fantasy.AgentTool {
+func NewBashTool(permissions permission.Service, workingDir string, attribution *config.Attribution, modelName string, hooksManager *hooks.Manager) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		BashToolName,
 		string(bashDescription(attribution, modelName)),
@@ -254,6 +255,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				if done {
 					// Command failed or completed very quickly
 					bgManager.Remove(bgShell.ID)
+					fireCwdChangedAsync(hooksManager, sessionID, execWorkingDir, bgShell.Shell.GetWorkingDir())
 
 					interrupted := shell.IsInterrupt(execErr)
 					exitCode := shell.ExitCode(execErr)
@@ -338,6 +340,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				// Remove from background manager since we're returning directly
 				// Don't call Kill() as it cancels the context and corrupts the exit code
 				bgManager.Remove(bgShell.ID)
+				fireCwdChangedAsync(hooksManager, sessionID, execWorkingDir, bgShell.Shell.GetWorkingDir())
 
 				interrupted := shell.IsInterrupt(execErr)
 				exitCode := shell.ExitCode(execErr)
@@ -374,6 +377,24 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			response := fmt.Sprintf("Command is taking longer than expected and has been moved to background.\n\nBackground shell ID: %s\n\nUse job_output tool to view output or job_kill to terminate.", bgShell.ID)
 			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
 		})
+}
+
+// fireCwdChangedAsync fires a CwdChanged hook asynchronously if the working
+// directory changed after command execution.
+func fireCwdChangedAsync(hooksManager *hooks.Manager, sessionID, oldCwd, newCwd string) {
+	if hooksManager == nil || newCwd == oldCwd {
+		return
+	}
+	go func() {
+		_, _ = hooksManager.Execute(context.Background(), hooks.CwdChanged, hooks.HookEvent{
+			HookEventName: hooks.CwdChanged,
+			SessionID:     sessionID,
+			RawEventData: map[string]string{
+				"previous_cwd": oldCwd,
+				"cwd":          newCwd,
+			},
+		})
+	}()
 }
 
 // formatOutput formats the output of a completed command with error handling
