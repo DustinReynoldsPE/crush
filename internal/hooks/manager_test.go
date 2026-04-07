@@ -558,3 +558,131 @@ func TestManager_SessionStart_DenyStopsBeforeUserPromptSubmit(t *testing.T) {
 	// The sentinel must remain absent — verified here as documentation of the contract.
 	require.False(t, fileExists(upsSentinel), "UserPromptSubmit must not fire after SessionStart deny")
 }
+
+// ── Notification hook ────────────────────────────────────────────────────────
+
+func TestManager_Notification_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		Notification: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), Notification, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_Notification_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "Notification" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		Notification: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), Notification, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_Notification_PayloadHasSessionIDAndMessage(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+sid=$(echo "$payload" | jq -r '.session_id')
+msg=$(echo "$payload" | jq -r '.data.message')
+[ "$sid" = "test-session-99" ] || { echo "wrong session_id: $sid" >&2; exit 2; }
+[ "$msg" = "agent_finished" ] || { echo "wrong message: $msg" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		Notification: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), Notification, HookEvent{
+		SessionID:    "test-session-99",
+		RawEventData: map[string]string{"message": "agent_finished"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_Notification_AsyncDoesNotBlockChain(t *testing.T) {
+	t.Parallel()
+	sentinel := t.TempDir() + "/sync-ran"
+	m := NewManager(map[HookType][]HookConfig{
+		Notification: {
+			{Command: "sleep 2", Async: true},
+			{Command: "touch " + sentinel},
+		},
+	})
+	start := time.Now()
+	result, err := m.Execute(context.Background(), Notification, HookEvent{SessionID: "s1"})
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+	require.True(t, fileExists(sentinel), "sync hook after async must still run")
+	require.Less(t, elapsed, 1500*time.Millisecond, "chain must not block on async hook")
+}
+
+func TestManager_Notification_NoHooks_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{})
+	result, err := m.Execute(context.Background(), Notification, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+// ── AgentError hook ──────────────────────────────────────────────────────────
+
+func TestManager_AgentError_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		AgentError: {{Command: "true"}},
+	})
+	result, err := m.Execute(context.Background(), AgentError, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_AgentError_HookEventName_Stamped(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+name=$(cat | jq -r '.hook_event_name')
+[ "$name" = "AgentError" ] || { echo "wrong event: $name" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		AgentError: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), AgentError, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_AgentError_PayloadHasSessionIDAndError(t *testing.T) {
+	t.Parallel()
+	script := writeScript(t, `#!/bin/sh
+payload=$(cat)
+sid=$(echo "$payload" | jq -r '.session_id')
+errMsg=$(echo "$payload" | jq -r '.data.error')
+[ "$sid" = "test-session-err" ] || { echo "wrong session_id: $sid" >&2; exit 2; }
+[ -n "$errMsg" ] || { echo "missing error field" >&2; exit 2; }
+[ "$errMsg" != "null" ] || { echo "error field is null" >&2; exit 2; }
+`)
+	m := NewManager(map[HookType][]HookConfig{
+		AgentError: {{Command: script}},
+	})
+	result, err := m.Execute(context.Background(), AgentError, HookEvent{
+		SessionID:    "test-session-err",
+		RawEventData: map[string]string{"error": "provider returned 503"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}
+
+func TestManager_AgentError_NoHooks_Proceed(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{})
+	result, err := m.Execute(context.Background(), AgentError, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, "proceed", result.Decision)
+}

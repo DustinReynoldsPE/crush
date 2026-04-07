@@ -21,6 +21,17 @@ const (
 	PermissionRequest HookType = "PermissionRequest"
 	// PermissionDenied is executed after a permission is denied (non-blocking).
 	PermissionDenied HookType = "PermissionDenied"
+	// Notification is executed when the agent finishes a turn cleanly and
+	// would surface a notification to the user. It is always fired
+	// asynchronously (fire-and-forget) and never blocks the response.
+	// The RawEventData payload includes a "message" field (e.g. "agent_finished").
+	Notification HookType = "Notification"
+	// AgentError is executed when agent.Stream() returns a genuine error
+	// (API failure, network error, provider error). It does NOT fire for
+	// intentional stops: context cancellations or permission denials.
+	// Always fired asynchronously; never affects error propagation.
+	// The RawEventData payload includes an "error" field with the error string.
+	AgentError HookType = "AgentError"
 )
 
 // HookEvent represents the context of an event triggering a hook.

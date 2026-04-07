@@ -520,6 +520,18 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	if err != nil {
 		isCancelErr := errors.Is(err, context.Canceled)
 		isPermissionErr := errors.Is(err, permission.ErrorPermissionDenied)
+		// Fire AgentError hook for genuine stream failures — not for intentional
+		// stops (cancel, permission denial) which are expected control flow.
+		if !isCancelErr && !isPermissionErr && a.hooksManager != nil {
+			go func() {
+				if _, hookErr := a.hooksManager.Execute(context.Background(), hooks.AgentError, hooks.HookEvent{
+					SessionID:    call.SessionID,
+					RawEventData: map[string]string{"error": err.Error()},
+				}); hookErr != nil {
+					slog.Warn("AgentError hook error (non-blocking)", "error", hookErr)
+				}
+			}()
+		}
 		if currentAssistant == nil {
 			return result, err
 		}
@@ -642,6 +654,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			SessionTitle: currentSession.Title,
 			Type:         notify.TypeAgentFinished,
 		})
+	}
+
+	// Fire Notification hook asynchronously so external notifiers (Slack,
+	// ntfy, desktop) are triggered without delaying the response.
+	if a.hooksManager != nil {
+		go func() {
+			if _, hookErr := a.hooksManager.Execute(context.Background(), hooks.Notification, hooks.HookEvent{
+				SessionID:    call.SessionID,
+				RawEventData: map[string]string{"message": "agent_finished"},
+			}); hookErr != nil {
+				slog.Warn("Notification hook error (non-blocking)", "error", hookErr)
+			}
+		}()
 	}
 
 	if shouldSummarize {

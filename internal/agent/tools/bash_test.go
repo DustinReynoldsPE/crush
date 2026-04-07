@@ -7,6 +7,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/config"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/shell"
@@ -38,6 +39,8 @@ func (m *mockBashPermissionService) SkipRequests() bool {
 func (m *mockBashPermissionService) SubscribeNotifications(ctx context.Context) <-chan pubsub.Event[permission.PermissionNotification] {
 	return make(<-chan pubsub.Event[permission.PermissionNotification])
 }
+
+func (m *mockBashPermissionService) SetHooksManager(_ *hooks.Manager) {}
 
 func TestBashTool_DefaultAutoBackgroundThreshold(t *testing.T) {
 	workingDir := t.TempDir()
