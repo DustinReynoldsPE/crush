@@ -83,6 +83,7 @@ type coordinator struct {
 	filetracker filetracker.Service
 	lspManager  *lsp.Manager
 	notify        pubsub.Publisher[notify.Notification]
+	hookNotify    pubsub.Publisher[hooks.HookNotification]
 	hooksManager  *hooks.Manager
 
 	currentAgent SessionAgent
@@ -100,9 +101,10 @@ func NewCoordinator(
 	history history.Service,
 	filetracker filetracker.Service,
 	lspManager *lsp.Manager,
-	notify pubsub.Publisher[notify.Notification],
+	notify     pubsub.Publisher[notify.Notification],
+	hookNotify pubsub.Publisher[hooks.HookNotification],
 ) (Coordinator, error) {
-	hooksManager := hooks.NewManager(buildHooksMap(cfg.Config().Options.Hooks))
+	hooksManager := hooks.NewManager(buildHooksMap(cfg.Config().Options.Hooks), hooks.WithPublisher(hookNotify))
 	permissions.SetHooksManager(hooksManager)
 
 	c := &coordinator{
@@ -114,6 +116,7 @@ func NewCoordinator(
 		filetracker:  filetracker,
 		lspManager:   lspManager,
 		notify:       notify,
+		hookNotify:   hookNotify,
 		hooksManager: hooksManager,
 		agents:       make(map[string]SessionAgent),
 	}

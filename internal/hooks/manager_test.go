@@ -2,10 +2,13 @@ package hooks
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/charmbracelet/crush/internal/pubsub"
 )
 
 // ── Manager.Execute: basic routing ──────────────────────────────────────────
@@ -921,4 +924,79 @@ sid=$(cat | jq -r '.session_id')
 	result, err := m.Execute(context.Background(), SessionEnd, HookEvent{SessionID: "end-session-42"})
 	require.NoError(t, err)
 	require.Equal(t, "proceed", result.Decision)
+}
+
+// ── Publisher integration ────────────────────────────────────────────────────
+
+type fakePublisher struct {
+	mu     sync.Mutex
+	events []HookNotification
+}
+
+func (f *fakePublisher) Publish(_ pubsub.EventType, n HookNotification) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, n)
+}
+
+func (f *fakePublisher) Events() []HookNotification {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]HookNotification, len(f.events))
+	copy(out, f.events)
+	return out
+}
+
+func TestManager_Publisher_RunningFiredBeforeComplete(t *testing.T) {
+	t.Parallel()
+	pub := &fakePublisher{}
+	script := writeScript(t, "#!/bin/sh\nsleep 0.05")
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: script}},
+	}, WithPublisher(pub))
+	_, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	events := pub.Events()
+	require.Len(t, events, 2)
+	require.Equal(t, NotificationRunning, events[0].Type)
+	require.Equal(t, NotificationComplete, events[1].Type)
+}
+
+func TestManager_Publisher_AsyncHook_NoRunningEvent(t *testing.T) {
+	t.Parallel()
+	pub := &fakePublisher{}
+	m := NewManager(map[HookType][]HookConfig{
+		PostToolUse: {{Command: "true", Async: true}},
+	}, WithPublisher(pub))
+	_, err := m.Execute(context.Background(), PostToolUse, HookEvent{SessionID: "s1"})
+	require.NoError(t, err)
+	// Give the goroutine a moment to run, then assert no events.
+	time.Sleep(50 * time.Millisecond)
+	require.Empty(t, pub.Events())
+}
+
+func TestManager_Publisher_NilPublisher_NoPanic(t *testing.T) {
+	t.Parallel()
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: "true"}},
+	})
+	require.NotPanics(t, func() {
+		_, _ = m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "bash"})
+	})
+}
+
+func TestManager_Publisher_DenyComplete_DecisionAndReason(t *testing.T) {
+	t.Parallel()
+	pub := &fakePublisher{}
+	m := NewManager(map[HookType][]HookConfig{
+		PreToolUse: {{Command: `echo "access denied" >&2; exit 2`}},
+	}, WithPublisher(pub))
+	result, err := m.Execute(context.Background(), PreToolUse, HookEvent{SessionID: "s1", ToolName: "bash"})
+	require.NoError(t, err)
+	require.Equal(t, "deny", result.Decision)
+	events := pub.Events()
+	complete := events[len(events)-1]
+	require.Equal(t, NotificationComplete, complete.Type)
+	require.Equal(t, "deny", complete.Decision)
+	require.Contains(t, complete.Reason, "access denied")
 }

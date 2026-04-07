@@ -26,6 +26,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/crush/internal/agent/notify"
+	"github.com/charmbracelet/crush/internal/hooks"
 	agenttools "github.com/charmbracelet/crush/internal/agent/tools"
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/commands"
@@ -224,6 +225,7 @@ type UI struct {
 	// Notification state
 	notifyBackend       notification.Backend
 	notifyWindowFocused bool
+	hookRunning         bool
 	// custom commands & mcp commands
 	customCommands []commands.CustomCommand
 	mcpPrompts     []commands.MCPPrompt
@@ -488,6 +490,10 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.notifyWindowFocused = false
 	case pubsub.Event[notify.Notification]:
 		if cmd := m.handleAgentNotification(msg.Payload); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case pubsub.Event[hooks.HookNotification]:
+		if cmd := m.handleHookNotification(msg.Payload); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	case loadSessionMsg:
@@ -835,16 +841,27 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea.SetValue(msg.Text)
 		m.textarea.MoveToEnd()
 		cmds = append(cmds, m.updateTextareaWithPrevHeight(msg, prevHeight))
+	case hookRunningMsg:
+		if m.hookRunning {
+			m.status.SetInfoMsg(util.InfoMsg{
+				Type: util.InfoTypeInfo,
+				Msg:  fmt.Sprintf("Running %s hook…", msg.hookType),
+				TTL:  -1,
+			})
+		}
 	case util.InfoMsg:
 		if msg.Type == util.InfoTypeError {
 			slog.Error("Error reported", "error", msg.Msg)
 		}
 		m.status.SetInfoMsg(msg)
 		ttl := msg.TTL
-		if ttl <= 0 {
-			ttl = DefaultStatusTTL
+		if ttl >= 0 {
+			if ttl == 0 {
+				ttl = DefaultStatusTTL
+			}
+			cmds = append(cmds, clearInfoMsgCmd(ttl))
 		}
-		cmds = append(cmds, clearInfoMsgCmd(ttl))
+		// ttl < 0: no auto-clear; message persists until explicitly cleared
 	case util.ClearStatusMsg:
 		m.status.ClearInfoMsg()
 	case completions.CompletionItemsLoadedMsg:
@@ -3206,6 +3223,42 @@ func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 	default:
 		return nil
 	}
+}
+
+
+// hookRunningMsg is sent after the slow-hook threshold delay to show a running indicator.
+type hookRunningMsg struct{ hookType hooks.HookType }
+
+const hookSlowThreshold = 300 * time.Millisecond
+
+// handleHookNotification routes hook lifecycle events to the status bar.
+func (m *UI) handleHookNotification(n hooks.HookNotification) tea.Cmd {
+	switch n.Type {
+	case hooks.NotificationRunning:
+		m.hookRunning = true
+		return tea.Tick(hookSlowThreshold, func(time.Time) tea.Msg {
+			return hookRunningMsg{hookType: n.HookType}
+		})
+	case hooks.NotificationComplete:
+		m.hookRunning = false
+		switch n.Decision {
+		case "deny":
+			return util.CmdHandler(util.InfoMsg{
+				Type: util.InfoTypeWarn,
+				Msg:  fmt.Sprintf("%s hook denied: %s", n.HookType, n.Reason),
+				TTL:  10 * time.Second,
+			})
+		case "error":
+			return util.CmdHandler(util.InfoMsg{
+				Type: util.InfoTypeWarn,
+				Msg:  fmt.Sprintf("%s hook error: %s", n.HookType, n.Reason),
+				TTL:  10 * time.Second,
+			})
+		default:
+			return util.CmdHandler(util.ClearStatusMsg{})
+		}
+	}
+	return nil
 }
 
 // newSession clears the current session state and prepares for a new session.

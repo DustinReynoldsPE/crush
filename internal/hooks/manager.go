@@ -6,23 +6,46 @@ import (
 	"log/slog"
 	"regexp"
 	"sync"
+	"time"
+
+	"github.com/charmbracelet/crush/internal/pubsub"
 )
 
 // Manager coordinates the execution of multiple configured hooks for a given event.
 type Manager struct {
-	executor *Executor
-	hooks    map[HookType][]HookConfig
-	mu       sync.Mutex
+	executor  *Executor
+	hooks     map[HookType][]HookConfig
+	publisher pubsub.Publisher[HookNotification]
+	mu        sync.Mutex
+}
+
+// ManagerOption configures a Manager.
+type ManagerOption func(*Manager)
+
+// WithPublisher attaches a publisher so the Manager emits lifecycle notifications.
+// Callers that omit this option get silent (no-op) behaviour.
+func WithPublisher(p pubsub.Publisher[HookNotification]) ManagerOption {
+	return func(m *Manager) { m.publisher = p }
 }
 
 // NewManager creates a new Hook Manager.
-func NewManager(hooks map[HookType][]HookConfig) *Manager {
+func NewManager(hooks map[HookType][]HookConfig, opts ...ManagerOption) *Manager {
 	m := &Manager{
 		executor: NewExecutor(),
 		hooks:    hooks,
 	}
+	for _, o := range opts {
+		o(m)
+	}
 	slog.Info("Hook Manager initialized", "hook_types", len(m.hooks))
 	return m
+}
+
+// publish emits a Notification if a publisher is configured.
+func (m *Manager) publish(n HookNotification) {
+	if m.publisher != nil {
+		m.publisher.Publish(pubsub.UpdatedEvent, n)
+	}
 }
 
 // Execute runs all matching hooks for hookType sequentially. A "deny" result
@@ -62,9 +85,28 @@ func (m *Manager) Execute(ctx context.Context, hookType HookType, event HookEven
 			continue
 		}
 
+		start := time.Now()
+		m.publish(HookNotification{
+			Type:      NotificationRunning,
+			HookType:  hookType,
+			Command:   hookCfg.Command,
+			SessionID: event.SessionID,
+		})
+
 		result, execErr := m.executor.Execute(ctx, hookCfg, event)
+
+		elapsed := time.Since(start)
 		if execErr != nil {
 			slog.Error("Hook execution failed", "type", hookType, "error", execErr)
+			m.publish(HookNotification{
+				Type:      NotificationComplete,
+				HookType:  hookType,
+				Command:   hookCfg.Command,
+				SessionID: event.SessionID,
+				Decision:  "error",
+				Reason:    fmt.Sprintf("Execution failure: %v", execErr),
+				Elapsed:   elapsed,
+			})
 			return HookResult{Decision: "error", Reason: fmt.Sprintf("Execution failure: %v", execErr)}, execErr
 		}
 
@@ -72,8 +114,27 @@ func (m *Manager) Execute(ctx context.Context, hookType HookType, event HookEven
 
 		if finalResult.Decision == "deny" {
 			slog.Warn("Hook denied action", "type", hookType, "reason", finalResult.Reason)
+			m.publish(HookNotification{
+				Type:      NotificationComplete,
+				HookType:  hookType,
+				Command:   hookCfg.Command,
+				SessionID: event.SessionID,
+				Decision:  "deny",
+				Reason:    finalResult.Reason,
+				Elapsed:   elapsed,
+			})
 			return finalResult, nil
 		}
+
+		m.publish(HookNotification{
+			Type:      NotificationComplete,
+			HookType:  hookType,
+			Command:   hookCfg.Command,
+			SessionID: event.SessionID,
+			Decision:  finalResult.Decision,
+			Reason:    finalResult.Reason,
+			Elapsed:   elapsed,
+		})
 	}
 
 	return finalResult, nil
